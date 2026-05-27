@@ -3,21 +3,13 @@
   NYC Yellow Taxi Trip Data - Versão PARALELA (multiprocessing)
   Programação Concorrente e Distribuída
 =============================================================
-  Estratégia Map-Reduce:
-    - Divide o CSV em N chunks iguais
-    - Cada processo filho processa seu chunk (MAP)
-    - O processo principal combina os resultados (REDUCE)
-
-  Métricas calculadas:
-    - Soma total das distâncias
-    - Média das corridas
-    - Maior corrida / Menor corrida
-    - Mediana e percentis (P25, P75, P90, P99)
-    - Desvio padrão
-    - Distribuição por faixas de distância
+  Filtro aplicado:
+    - Passo 1: calcula o P99 sequencialmente (passagem rápida)
+    - Passo 2: MAP paralelo com filtro dist >= DIST_MIN e <= P99
+    - Passo 3: REDUCE combina os parciais
 
   Uso:
-    python taxi_parallel.py                  # todos os núcleos
+    python taxi_parallel.py
     python taxi_parallel.py --processos 4
     python taxi_parallel.py -p 8
 =============================================================
@@ -37,6 +29,7 @@ from math import ceil
 CSV_FILE    = "yellow_tripdata_2015-01.csv"
 DIST_COL    = "trip_distance"
 RESULTS_DIR = "resultados_paralelos"
+DIST_MIN    = 0.1          # mínimo absoluto
 
 FAIXAS = [
     (0.0,  1.0,  "Curta      (0 – 1 mi)"),
@@ -48,58 +41,26 @@ FAIXAS = [
 # ──────────────────────────────────────────────────────────
 
 
-# ══════════════════════════════════════════════════════════
-#  Funções de cálculo (reutilizáveis e testáveis)
-# ══════════════════════════════════════════════════════════
+# ── Funções de cálculo ────────────────────────────────────
 
-def calcular_soma(distancias: list) -> float:
-    """Soma total das distâncias."""
-    return sum(distancias)
+def calcular_media(distancias):
+    return sum(distancias) / len(distancias) if distancias else 0.0
 
-
-def calcular_media(distancias: list) -> float:
-    """Média aritmética das distâncias."""
-    return calcular_soma(distancias) / len(distancias) if distancias else 0.0
-
-
-def calcular_maior_corrida(distancias: list) -> float:
-    """Maior distância registrada."""
-    return max(distancias) if distancias else 0.0
-
-
-def calcular_menor_corrida(distancias: list) -> float:
-    """Menor distância válida (> 0)."""
-    return min(distancias) if distancias else 0.0
-
-
-def calcular_desvio_padrao(distancias: list, media: float) -> float:
-    """Desvio padrão populacional."""
+def calcular_desvio_padrao(distancias, media):
     if len(distancias) < 2:
         return 0.0
-    variancia = sum((d - media) ** 2 for d in distancias) / len(distancias)
-    return math.sqrt(variancia)
+    return math.sqrt(sum((d - media) ** 2 for d in distancias) / len(distancias))
 
-
-def calcular_percentil(distancias_ordenadas: list, p: float) -> float:
-    """Percentil p (0–100) com interpolação linear. Lista deve estar ordenada."""
-    n = len(distancias_ordenadas)
+def calcular_percentil(ordenadas, p):
+    n = len(ordenadas)
     if n == 0:
         return 0.0
-    indice   = (p / 100) * (n - 1)
-    inferior = int(indice)
-    superior = min(inferior + 1, n - 1)
-    fracao   = indice - inferior
-    return (distancias_ordenadas[inferior]
-            + fracao * (distancias_ordenadas[superior] - distancias_ordenadas[inferior]))
+    idx = (p / 100) * (n - 1)
+    lo  = int(idx)
+    hi  = min(lo + 1, n - 1)
+    return ordenadas[lo] + (idx - lo) * (ordenadas[hi] - ordenadas[lo])
 
-
-def calcular_mediana(distancias_ordenadas: list) -> float:
-    """Mediana (P50). Lista deve estar ordenada."""
-    return calcular_percentil(distancias_ordenadas, 50)
-
-
-def calcular_distribuicao(distancias: list) -> dict:
-    """Conta corridas em cada faixa de distância."""
+def calcular_distribuicao(distancias):
     contagens = {label: 0 for _, _, label in FAIXAS}
     for d in distancias:
         for baixo, alto, label in FAIXAS:
@@ -109,18 +70,32 @@ def calcular_distribuicao(distancias: list) -> dict:
     return contagens
 
 
-# ══════════════════════════════════════════════════════════
-#  Processamento Map-Reduce
-# ══════════════════════════════════════════════════════════
+# ── Filtro P99 (sequencial, rápido) ──────────────────────
 
-def processar_chunk(linhas: list) -> dict:
-    """
-    MAP — executado em cada processo filho.
-    Retorna estatísticas parciais do chunk, incluindo lista de distâncias
-    para posterior cálculo de percentis no REDUCE.
-    """
+def calcular_limite_p99(csv_path):
+    """Primeira passagem leve: só coleta distâncias para calcular P99."""
+    distancias = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                dist = float(row[DIST_COL])
+            except (ValueError, KeyError):
+                continue
+            if dist >= DIST_MIN:
+                distancias.append(dist)
+    distancias.sort()
+    return calcular_percentil(distancias, 99)
+
+
+# ── Map-Reduce ────────────────────────────────────────────
+
+def processar_chunk(args):
+    """MAP — executado em cada processo filho com filtro aplicado."""
+    linhas, limite_p99 = args
     soma       = 0.0
     contagem   = 0
+    removidos  = 0
     maior      = float("-inf")
     menor      = float("inf")
     distancias = []
@@ -131,90 +106,68 @@ def processar_chunk(linhas: list) -> dict:
         except (ValueError, KeyError):
             continue
 
-        if dist <= 0:
+        if dist < DIST_MIN:
+            continue
+        if dist > limite_p99:
+            removidos += 1
             continue
 
         soma     += dist
         contagem += 1
         distancias.append(dist)
-
-        if dist > maior:
-            maior = dist
-        if dist < menor:
-            menor = dist
+        if dist > maior: maior = dist
+        if dist < menor: menor = dist
 
     return {
         "soma":       soma,
         "contagem":   contagem,
+        "removidos":  removidos,
         "maior":      maior if contagem > 0 else 0.0,
         "menor":      menor if contagem > 0 else 0.0,
         "distancias": distancias,
     }
 
 
-def worker(args: tuple) -> dict:
-    """Wrapper para Pool.map — recebe (chunk_id, linhas)."""
-    _chunk_id, linhas = args
-    return processar_chunk(linhas)
-
-
-def combinar_resultados(parciais: list) -> dict:
-    """
-    REDUCE — combina todos os resultados parciais em métricas finais.
-    """
-    soma_total        = 0.0
-    contagem_total    = 0
-    maior_global      = float("-inf")
-    menor_global      = float("inf")
-    todas_distancias  = []
+def combinar_resultados(parciais, limite_p99):
+    """REDUCE — combina todos os resultados parciais."""
+    soma_total   = 0.0
+    contagem_total = 0
+    removidos_total = 0
+    maior_global = float("-inf")
+    menor_global = float("inf")
+    todas        = []
 
     for p in parciais:
-        soma_total        += p["soma"]
-        contagem_total    += p["contagem"]
-        todas_distancias  += p.get("distancias", [])
-        if p["maior"] > maior_global:
-            maior_global = p["maior"]
-        if p["menor"] < menor_global:
-            menor_global = p["menor"]
+        soma_total      += p["soma"]
+        contagem_total  += p["contagem"]
+        removidos_total += p["removidos"]
+        todas           += p["distancias"]
+        if p["maior"] > maior_global: maior_global = p["maior"]
+        if p["menor"] < menor_global: menor_global = p["menor"]
 
-    media = calcular_media(todas_distancias)
-
-    # Ordena uma única vez — base para mediana e todos os percentis
-    todas_distancias.sort()
-
-    desvio  = calcular_desvio_padrao(todas_distancias, media)
-    mediana = calcular_mediana(todas_distancias)
-    p25     = calcular_percentil(todas_distancias, 25)
-    p75     = calcular_percentil(todas_distancias, 75)
-    p90     = calcular_percentil(todas_distancias, 90)
-    p99     = calcular_percentil(todas_distancias, 99)
-
-    distribuicao = calcular_distribuicao(todas_distancias)
+    media = calcular_media(todas)
+    todas.sort()
 
     return {
-        # ── Métricas principais ──────────────────────────
-        "soma_total":     round(soma_total,   4),
-        "media":          round(media,         4),
-        "maior_corrida":  round(maior_global,  4),
-        "menor_corrida":  round(menor_global,  4),
-        "total_corridas": contagem_total,
-        # ── Métricas adicionais ──────────────────────────
-        "desvio_padrao":  round(desvio,  4),
-        "mediana":        round(mediana, 4),
-        "percentil_25":   round(p25,     4),
-        "percentil_75":   round(p75,     4),
-        "percentil_90":   round(p90,     4),
-        "percentil_99":   round(p99,     4),
-        "distribuicao":   distribuicao,
+        "soma_total":         round(soma_total, 4),
+        "media":              round(media, 4),
+        "maior_corrida":      round(maior_global, 4),
+        "menor_corrida":      round(menor_global, 4),
+        "total_corridas":     contagem_total,
+        "outliers_removidos": removidos_total,
+        "limite_p99":         round(limite_p99, 4),
+        "desvio_padrao":      round(calcular_desvio_padrao(todas, media), 4),
+        "mediana":            round(calcular_percentil(todas, 50), 4),
+        "percentil_25":       round(calcular_percentil(todas, 25), 4),
+        "percentil_75":       round(calcular_percentil(todas, 75), 4),
+        "percentil_90":       round(calcular_percentil(todas, 90), 4),
+        "distribuicao":       calcular_distribuicao(todas),
     }
 
 
-# ══════════════════════════════════════════════════════════
-#  I/O e divisão
-# ══════════════════════════════════════════════════════════
+# ── I/O ───────────────────────────────────────────────────
 
-def ler_csv(csv_path: str) -> list:
-    """Lê todo o CSV e retorna lista de dicionários."""
+def ler_csv(csv_path):
     linhas = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -222,84 +175,80 @@ def ler_csv(csv_path: str) -> list:
             linhas.append(row)
     return linhas
 
-
-def dividir_em_chunks(linhas: list, n: int) -> list:
-    """Divide a lista em N partes aproximadamente iguais."""
-    tamanho = ceil(len(linhas) / n)
-    return [linhas[i : i + tamanho] for i in range(0, len(linhas), tamanho)]
+def dividir_em_chunks(linhas, n):
+    sz = ceil(len(linhas) / n)
+    return [linhas[i : i + sz] for i in range(0, len(linhas), sz)]
 
 
-def executar_paralelo(
-    csv_path: str, num_processos: int
-) -> tuple:
-    """
-    Executa o pipeline completo.
-    Retorna: (resultado, tempo_total, tempo_leitura, tempo_processamento)
-    """
-    # Leitura (sequencial, única vez)
+# ── Execução ──────────────────────────────────────────────
+
+def executar_paralelo(csv_path, num_processos):
+    # Passo 1 — P99 (sequencial, rápido)
+    print("  [1/3] Calculando limite P99...", end=" ", flush=True)
     t0 = time.perf_counter()
+    limite_p99 = calcular_limite_p99(csv_path)
+    print(f"P99 = {limite_p99:.4f} milhas")
+
+    # Passo 2 — leitura
+    print("  [2/3] Lendo CSV...", end=" ", flush=True)
     todas_as_linhas = ler_csv(csv_path)
     t1 = time.perf_counter()
     tempo_leitura = t1 - t0
+    print(f"OK  ({len(todas_as_linhas):,} linhas, {tempo_leitura:.2f}s)")
 
-    # Divisão
+    # Passo 3 — MAP paralelo
+    print(f"  [3/3] Processando com {num_processos} processo(s)...", end=" ", flush=True)
     chunks = dividir_em_chunks(todas_as_linhas, num_processos)
-    args   = [(i, chunk) for i, chunk in enumerate(chunks)]
+    args   = [(chunk, limite_p99) for chunk in chunks]
 
-    # MAP paralelo
     t2 = time.perf_counter()
     with mp.Pool(processes=num_processos) as pool:
-        resultados_parciais = pool.map(worker, args)
+        parciais = pool.map(processar_chunk, args)
     t3 = time.perf_counter()
     tempo_processamento = t3 - t2
 
-    # REDUCE
-    resultado = combinar_resultados(resultados_parciais)
+    resultado = combinar_resultados(parciais, limite_p99)
+    print(f"OK  ({resultado['outliers_removidos']:,} outliers removidos)")
 
     tempo_total = t3 - t0
     return resultado, tempo_total, tempo_leitura, tempo_processamento
 
 
-# ══════════════════════════════════════════════════════════
-#  Exibição
-# ══════════════════════════════════════════════════════════
+# ── Exibição ──────────────────────────────────────────────
 
-def exibir_resultados(resultado: dict, num_processos: int,
-                      tempo_total: float, tempo_leitura: float,
-                      tempo_proc: float) -> None:
+def exibir_resultados(resultado, num_processos, tempo_total, tempo_leitura, tempo_proc):
     larg = 62
     sep  = "=" * larg
-
     print(sep)
     print("  NYC Yellow Taxi  —  Processamento PARALELO")
-    print(f"  Processos utilizados: {num_processos}")
+    print(f"  Processos: {num_processos}  |  Filtro: {DIST_MIN} mi – P99 ({resultado['limite_p99']} mi)")
     print(sep)
 
-    print(f"\n  {'Total de corridas válidas':<30}: {resultado['total_corridas']:>14,}")
+    print(f"\n  {'Total de corridas (pós-filtro)':<32}: {resultado['total_corridas']:>12,}")
+    print(f"  {'Outliers removidos':<32}: {resultado['outliers_removidos']:>12,}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'DISTÂNCIAS (milhas)'}")
+    print(f"  DISTÂNCIAS (milhas)")
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'Soma total':<30}: {resultado['soma_total']:>14,.4f}")
-    print(f"  {'Média':<30}: {resultado['media']:>14.4f}")
-    print(f"  {'Maior corrida':<30}: {resultado['maior_corrida']:>14.4f}")
-    print(f"  {'Menor corrida':<30}: {resultado['menor_corrida']:>14.4f}")
-    print(f"  {'Desvio padrão':<30}: {resultado['desvio_padrao']:>14.4f}")
+    print(f"  {'Soma total':<32}: {resultado['soma_total']:>12,.4f}")
+    print(f"  {'Média':<32}: {resultado['media']:>12.4f}")
+    print(f"  {'Maior corrida':<32}: {resultado['maior_corrida']:>12.4f}")
+    print(f"  {'Menor corrida':<32}: {resultado['menor_corrida']:>12.4f}")
+    print(f"  {'Desvio padrão':<32}: {resultado['desvio_padrao']:>12.4f}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'PERCENTIS'}")
+    print(f"  PERCENTIS")
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'P25 (1º quartil)':<30}: {resultado['percentil_25']:>14.4f}")
-    print(f"  {'P50 (mediana)':<30}: {resultado['mediana']:>14.4f}")
-    print(f"  {'P75 (3º quartil)':<30}: {resultado['percentil_75']:>14.4f}")
-    print(f"  {'P90':<30}: {resultado['percentil_90']:>14.4f}")
-    print(f"  {'P99':<30}: {resultado['percentil_99']:>14.4f}")
+    print(f"  {'P25 (1º quartil)':<32}: {resultado['percentil_25']:>12.4f}")
+    print(f"  {'P50 (mediana)':<32}: {resultado['mediana']:>12.4f}")
+    print(f"  {'P75 (3º quartil)':<32}: {resultado['percentil_75']:>12.4f}")
+    print(f"  {'P90':<32}: {resultado['percentil_90']:>12.4f}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'DISTRIBUIÇÃO POR FAIXA'}")
+    print(f"  DISTRIBUIÇÃO POR FAIXA")
     print(f"  {'─' * (larg - 4)}")
     total = resultado["total_corridas"]
     for label, qtd in resultado["distribuicao"].items():
@@ -309,35 +258,25 @@ def exibir_resultados(resultado: dict, num_processos: int,
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'DESEMPENHO'}")
+    print(f"  DESEMPENHO")
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'Tempo de leitura CSV':<30}: {tempo_leitura:>13.4f} s")
-    print(f"  {'Tempo de processamento':<30}: {tempo_proc:>13.4f} s")
-    print(f"  {'Tempo TOTAL':<30}: {tempo_total:>13.4f} s")
+    print(f"  {'Tempo de leitura CSV':<32}: {tempo_leitura:>11.4f} s")
+    print(f"  {'Tempo de processamento':<32}: {tempo_proc:>11.4f} s")
+    print(f"  {'Tempo TOTAL':<32}: {tempo_total:>11.4f} s")
     print(sep)
 
 
-# ══════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════
+# ── Main ──────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Análise paralela do NYC Yellow Taxi Trip Data"
-    )
-    parser.add_argument(
-        "--processos", "-p",
-        type=int,
-        default=mp.cpu_count(),
-        help=f"Número de processos (padrão: {mp.cpu_count()} — todos os núcleos)",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--processos", "-p", type=int, default=mp.cpu_count())
     args = parser.parse_args()
     num_processos = max(1, args.processos)
 
     csv_path = CSV_FILE
     if not os.path.exists(csv_path):
         print(f"[ERRO] Arquivo não encontrado: {csv_path}")
-        print("Coloque o arquivo CSV na mesma pasta ou ajuste CSV_FILE.")
         sys.exit(1)
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -345,10 +284,8 @@ def main():
     resultado, tempo_total, tempo_leitura, tempo_proc = executar_paralelo(
         csv_path, num_processos
     )
-
     exibir_resultados(resultado, num_processos, tempo_total, tempo_leitura, tempo_proc)
 
-    # Salva JSON individual
     saida = {
         **{k: v for k, v in resultado.items() if k != "distancias"},
         "num_processos":          num_processos,
