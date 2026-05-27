@@ -3,14 +3,11 @@
   NYC Yellow Taxi Trip Data - Versão SEQUENCIAL
   Programação Concorrente e Distribuída
 =============================================================
-  Métricas calculadas:
-    - Soma total das distâncias
-    - Média das corridas
-    - Maior corrida
-    - Menor corrida (> 0)
-    - Mediana e percentis (P25, P75, P90, P99)
-    - Desvio padrão
-    - Distribuição por faixas de distância
+  Filtro aplicado:
+    - Passo 1: lê todas as distâncias válidas (> 0)
+    - Passo 2: calcula o P99 como limite superior
+    - Passo 3: reprocessa mantendo apenas distâncias <= P99
+    Isso remove ~1% de registros corrompidos (ex: 15 milhões mi)
 =============================================================
 """
 
@@ -25,8 +22,8 @@ import math
 CSV_FILE     = "yellow_tripdata_2015-01.csv"
 DIST_COL     = "trip_distance"
 RESULTS_FILE = "sequential_results.json"
+DIST_MIN     = 0.1          # mínimo absoluto (ignora corridas < 0.1 mi)
 
-# Faixas de distância (em milhas) para distribuição
 FAIXAS = [
     (0.0,  1.0,  "Curta      (0 – 1 mi)"),
     (1.0,  3.0,  "Média      (1 – 3 mi)"),
@@ -37,254 +34,175 @@ FAIXAS = [
 # ──────────────────────────────────────────────────────────
 
 
-# ══════════════════════════════════════════════════════════
-#  Funções de cálculo
-# ══════════════════════════════════════════════════════════
+# ── Funções de cálculo ────────────────────────────────────
 
-def calcular_soma(distancias: list[float]) -> float:
-    """Retorna a soma total das distâncias."""
+def calcular_soma(distancias):
     return sum(distancias)
 
+def calcular_media(distancias):
+    return calcular_soma(distancias) / len(distancias) if distancias else 0.0
 
-def calcular_media(distancias: list[float]) -> float:
-    """Retorna a média aritmética das distâncias."""
-    if not distancias:
-        return 0.0
-    return calcular_soma(distancias) / len(distancias)
-
-
-def calcular_maior_corrida(distancias: list[float]) -> float:
-    """Retorna a maior distância registrada."""
-    return max(distancias) if distancias else 0.0
-
-
-def calcular_menor_corrida(distancias: list[float]) -> float:
-    """Retorna a menor distância válida (> 0)."""
-    return min(distancias) if distancias else 0.0
-
-
-def calcular_desvio_padrao(distancias: list[float], media: float) -> float:
-    """Desvio padrão populacional das distâncias."""
+def calcular_desvio_padrao(distancias, media):
     if len(distancias) < 2:
         return 0.0
-    variancia = sum((d - media) ** 2 for d in distancias) / len(distancias)
-    return math.sqrt(variancia)
+    return math.sqrt(sum((d - media) ** 2 for d in distancias) / len(distancias))
 
-
-def calcular_percentil(distancias_ordenadas: list[float], p: float) -> float:
-    """
-    Percentil p (0–100) usando interpolação linear.
-    Requer a lista já ordenada.
-    """
-    n = len(distancias_ordenadas)
+def calcular_percentil(ordenadas, p):
+    n = len(ordenadas)
     if n == 0:
         return 0.0
-    indice = (p / 100) * (n - 1)
-    inferior = int(indice)
-    superior = min(inferior + 1, n - 1)
-    fracao   = indice - inferior
-    return distancias_ordenadas[inferior] + fracao * (
-        distancias_ordenadas[superior] - distancias_ordenadas[inferior]
-    )
+    idx = (p / 100) * (n - 1)
+    lo  = int(idx)
+    hi  = min(lo + 1, n - 1)
+    return ordenadas[lo] + (idx - lo) * (ordenadas[hi] - ordenadas[lo])
 
-
-def calcular_mediana(distancias_ordenadas: list[float]) -> float:
-    """Mediana (P50) da lista ordenada."""
-    return calcular_percentil(distancias_ordenadas, 50)
-
-
-def calcular_distribuicao(distancias: list[float]) -> dict:
-    """Conta corridas em cada faixa de distância."""
+def calcular_distribuicao(distancias):
     contagens = {label: 0 for _, _, label in FAIXAS}
     for d in distancias:
         for baixo, alto, label in FAIXAS:
-            if baixo < d <= alto or (baixo == 0.0 and d > 0):
-                if baixo < d <= alto:
-                    contagens[label] += 1
-                    break
+            if baixo < d <= alto:
+                contagens[label] += 1
+                break
     return contagens
 
 
-# ══════════════════════════════════════════════════════════
-#  Processamento principal
-# ══════════════════════════════════════════════════════════
+# ── Filtro P99 ────────────────────────────────────────────
 
-def processar_chunk(linhas: list[dict]) -> dict:
-    """
-    Processa uma lista de linhas e retorna estatísticas parciais.
-    Coleta as distâncias individuais para cálculos de percentil.
-    """
-    soma       = 0.0
-    contagem   = 0
-    maior      = float("-inf")
-    menor      = float("inf")
-    distancias = []          # ← novo: guarda valores para percentis
-
-    for row in linhas:
-        try:
-            dist = float(row[DIST_COL])
-        except (ValueError, KeyError):
-            continue
-
-        if dist <= 0:
-            continue
-
-        soma     += dist
-        contagem += 1
-        distancias.append(dist)
-
-        if dist > maior:
-            maior = dist
-        if dist < menor:
-            menor = dist
-
-    return {
-        "soma":       soma,
-        "contagem":   contagem,
-        "maior":      maior if contagem > 0 else 0.0,
-        "menor":      menor if contagem > 0 else 0.0,
-        "distancias": distancias,     # ← novo
-    }
-
-
-def combinar_resultados(parciais: list[dict]) -> dict:
-    """Combina N resultados parciais em um resultado final completo."""
-    soma_total     = 0.0
-    contagem_total = 0
-    maior_global   = float("-inf")
-    menor_global   = float("inf")
-    todas_distancias: list[float] = []
-
-    for p in parciais:
-        soma_total         += p["soma"]
-        contagem_total     += p["contagem"]
-        todas_distancias   += p.get("distancias", [])
-        if p["maior"] > maior_global:
-            maior_global = p["maior"]
-        if p["menor"] < menor_global:
-            menor_global = p["menor"]
-
-    media = calcular_media(todas_distancias)
-
-    # Ordena uma única vez para todos os percentis
-    todas_distancias.sort()
-
-    desvio  = calcular_desvio_padrao(todas_distancias, media)
-    mediana = calcular_mediana(todas_distancias)
-    p25     = calcular_percentil(todas_distancias, 25)
-    p75     = calcular_percentil(todas_distancias, 75)
-    p90     = calcular_percentil(todas_distancias, 90)
-    p99     = calcular_percentil(todas_distancias, 99)
-
-    distribuicao = calcular_distribuicao(todas_distancias)
-
-    return {
-        # ── Métricas principais ──────────────────────────
-        "soma_total":      round(soma_total,    4),
-        "media":           round(media,          4),
-        "maior_corrida":   round(maior_global,   4),
-        "menor_corrida":   round(menor_global,   4),
-        "total_corridas":  contagem_total,
-        # ── Métricas adicionais ──────────────────────────
-        "desvio_padrao":   round(desvio,  4),
-        "mediana":         round(mediana, 4),
-        "percentil_25":    round(p25,     4),
-        "percentil_75":    round(p75,     4),
-        "percentil_90":    round(p90,     4),
-        "percentil_99":    round(p99,     4),
-        "distribuicao":    distribuicao,
-    }
-
-
-def executar_sequencial(csv_path: str) -> tuple[dict, float]:
-    """Lê o CSV e processa tudo em sequência (1 processo)."""
-    inicio = time.perf_counter()
-
-    todas_as_linhas: list[dict] = []
+def calcular_limite_p99(csv_path):
+    """Primeira passagem: coleta distâncias válidas e calcula P99."""
+    distancias = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            todas_as_linhas.append(row)
+            try:
+                dist = float(row[DIST_COL])
+            except (ValueError, KeyError):
+                continue
+            if dist >= DIST_MIN:
+                distancias.append(dist)
+    distancias.sort()
+    return calcular_percentil(distancias, 99), len(distancias)
 
-    parcial   = processar_chunk(todas_as_linhas)
-    resultado = combinar_resultados([parcial])
+
+# ── Processamento ─────────────────────────────────────────
+
+def executar_sequencial(csv_path):
+    inicio = time.perf_counter()
+
+    # Passo 1 — calcula o limite P99
+    print("  [1/2] Calculando limite P99...", end=" ", flush=True)
+    limite_p99, total_bruto = calcular_limite_p99(csv_path)
+    print(f"P99 = {limite_p99:.4f} milhas  ({total_bruto:,} registros válidos brutos)")
+
+    # Passo 2 — lê e filtra
+    print("  [2/2] Processando com filtro...", end=" ", flush=True)
+    distancias = []
+    removidos  = 0
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                dist = float(row[DIST_COL])
+            except (ValueError, KeyError):
+                continue
+            if dist < DIST_MIN:
+                continue
+            if dist > limite_p99:
+                removidos += 1
+                continue
+            distancias.append(dist)
+
+    print(f"OK  ({removidos:,} outliers removidos)")
+
+    # Cálculos finais
+    distancias.sort()
+    media        = calcular_media(distancias)
+    desvio       = calcular_desvio_padrao(distancias, media)
+    distribuicao = calcular_distribuicao(distancias)
+
+    resultado = {
+        "soma_total":     round(calcular_soma(distancias), 4),
+        "media":          round(media, 4),
+        "maior_corrida":  round(max(distancias), 4),
+        "menor_corrida":  round(min(distancias), 4),
+        "total_corridas": len(distancias),
+        "outliers_removidos": removidos,
+        "limite_p99":     round(limite_p99, 4),
+        "desvio_padrao":  round(desvio, 4),
+        "mediana":        round(calcular_percentil(distancias, 50), 4),
+        "percentil_25":   round(calcular_percentil(distancias, 25), 4),
+        "percentil_75":   round(calcular_percentil(distancias, 75), 4),
+        "percentil_90":   round(calcular_percentil(distancias, 90), 4),
+        "distribuicao":   distribuicao,
+    }
 
     tempo = time.perf_counter() - inicio
     return resultado, tempo
 
 
-# ══════════════════════════════════════════════════════════
-#  Exibição
-# ══════════════════════════════════════════════════════════
+# ── Exibição ──────────────────────────────────────────────
 
-def exibir_resultados(resultado: dict, tempo: float) -> None:
-    larg = 60
+def exibir_resultados(resultado, tempo):
+    larg = 62
     sep  = "=" * larg
-
     print(sep)
     print("  NYC Yellow Taxi  —  Processamento SEQUENCIAL")
+    print(f"  Filtro: distâncias entre {DIST_MIN} mi e P99 ({resultado['limite_p99']} mi)")
     print(sep)
 
-    print(f"\n{'  RESUMO DAS CORRIDAS':}")
-    print(f"  {'Total de corridas válidas':<30}: {resultado['total_corridas']:>15,}")
+    print(f"\n  {'Total de corridas (pós-filtro)':<32}: {resultado['total_corridas']:>12,}")
+    print(f"  {'Outliers removidos':<32}: {resultado['outliers_removidos']:>12,}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'DISTÂNCIAS (milhas)'}")
+    print(f"  DISTÂNCIAS (milhas)")
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'Soma total':<30}: {resultado['soma_total']:>15,.4f}")
-    print(f"  {'Média':<30}: {resultado['media']:>15.4f}")
-    print(f"  {'Maior corrida':<30}: {resultado['maior_corrida']:>15.4f}")
-    print(f"  {'Menor corrida':<30}: {resultado['menor_corrida']:>15.4f}")
-    print(f"  {'Desvio padrão':<30}: {resultado['desvio_padrao']:>15.4f}")
+    print(f"  {'Soma total':<32}: {resultado['soma_total']:>12,.4f}")
+    print(f"  {'Média':<32}: {resultado['media']:>12.4f}")
+    print(f"  {'Maior corrida':<32}: {resultado['maior_corrida']:>12.4f}")
+    print(f"  {'Menor corrida':<32}: {resultado['menor_corrida']:>12.4f}")
+    print(f"  {'Desvio padrão':<32}: {resultado['desvio_padrao']:>12.4f}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'PERCENTIS'}")
+    print(f"  PERCENTIS")
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'P25 (1º quartil)':<30}: {resultado['percentil_25']:>15.4f}")
-    print(f"  {'P50 (mediana)':<30}: {resultado['mediana']:>15.4f}")
-    print(f"  {'P75 (3º quartil)':<30}: {resultado['percentil_75']:>15.4f}")
-    print(f"  {'P90':<30}: {resultado['percentil_90']:>15.4f}")
-    print(f"  {'P99':<30}: {resultado['percentil_99']:>15.4f}")
+    print(f"  {'P25 (1º quartil)':<32}: {resultado['percentil_25']:>12.4f}")
+    print(f"  {'P50 (mediana)':<32}: {resultado['mediana']:>12.4f}")
+    print(f"  {'P75 (3º quartil)':<32}: {resultado['percentil_75']:>12.4f}")
+    print(f"  {'P90':<32}: {resultado['percentil_90']:>12.4f}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'DISTRIBUIÇÃO POR FAIXA'}")
+    print(f"  DISTRIBUIÇÃO POR FAIXA")
     print(f"  {'─' * (larg - 4)}")
     total = resultado["total_corridas"]
     for label, qtd in resultado["distribuicao"].items():
-        pct = qtd / total * 100 if total > 0 else 0
+        pct   = qtd / total * 100 if total > 0 else 0
         barra = "█" * int(pct / 2)
         print(f"  {label}: {qtd:>10,}  ({pct:5.1f}%)  {barra}")
     print()
 
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'DESEMPENHO'}")
+    print(f"  DESEMPENHO")
     print(f"  {'─' * (larg - 4)}")
-    print(f"  {'Tempo de execução':<30}: {tempo:>14.4f} s")
+    print(f"  {'Tempo de execução':<32}: {tempo:>11.4f} s")
     print(sep)
 
 
-# ══════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════
+# ── Main ──────────────────────────────────────────────────
 
 def main():
     csv_path = CSV_FILE
     if not os.path.exists(csv_path):
         print(f"[ERRO] Arquivo não encontrado: {csv_path}")
-        print("Coloque o arquivo CSV na mesma pasta do script ou ajuste CSV_FILE.")
         sys.exit(1)
 
     resultado, tempo = executar_sequencial(csv_path)
     exibir_resultados(resultado, tempo)
 
-    saida = {
-        **{k: v for k, v in resultado.items() if k != "distancias"},
-        "tempo_segundos": round(tempo, 6),
-        "num_processos":  1,
-    }
+    saida = {**resultado, "tempo_segundos": round(tempo, 6), "num_processos": 1}
     with open(RESULTS_FILE, "w") as f:
         json.dump(saida, f, indent=2, ensure_ascii=False)
     print(f"\n  Resultados salvos em: {RESULTS_FILE}")
