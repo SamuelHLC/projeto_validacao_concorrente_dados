@@ -161,6 +161,7 @@ projeto/
 ├── sequential_results.json         ← gerado por taxi_sequential.py
 │
 ├── resultados_paralelos/           ← gerado por taxi_parallel.py
+│   ├── resultado_p02.json          ←   execução com 2 processos
 │   ├── resultado_p04.json          ←   execução com 4 processos
 │   ├── resultado_p08.json          ←   execução com 8 processos
 │   └── resultado_p12.json          ←   execução com 12 processos
@@ -181,7 +182,7 @@ projeto/
 |---|---|---|
 | `taxi_sequential.py` | Processa o CSV com 1 processo, do início ao fim | Para obter a linha de base de tempo |
 | `taxi_parallel.py` | Processa o CSV dividindo o trabalho entre N processos | Para obter os resultados com paralelismo |
-| `taxi_benchmark.py` | Executa `taxi_parallel.py` automaticamente com 1, 2, 4, 8… processos e gera gráficos comparativos | Para analisar speedup e eficiência |
+| `taxi_benchmark.py` | Executa o processamento automaticamente com 1, 2, 4, 8 e 12 processos e gera gráficos comparativos | Para analisar tempo médio, speedup e eficiência |
 
 ---
 
@@ -244,20 +245,54 @@ python taxi_parallel.py -p 8
 
 ---
 
-### Passo 4 — Benchmark completo + Gráficos
+### Passo 4 — Benchmark completo + gráficos de speedup
 
-Executa o processamento automaticamente com 1, 2, 4 e 8 processos (ou mais), repete cada configuração 3 vezes para obter uma média confiável, calcula speedup e eficiência, e gera gráficos comparativos em PNG.
+O benchmark é a etapa usada para comparar o desempenho entre a versão sequencial e a versão paralela. Ele executa o processamento várias vezes, calcula a **média de tempo** para cada configuração e gera gráficos automaticamente.
+
+Para este trabalho, a comparação principal deve considerar exatamente as seguintes configurações:
+
+| Configuração | Objetivo |
+|---|---|
+| **1 processo** | Linha de base, equivalente ao processamento sequencial dentro do benchmark |
+| **2 processos** | Primeiro nível de paralelismo |
+| **4 processos** | Paralelismo intermediário |
+| **8 processos** | Paralelismo alto |
+| **12 processos** | Teste próximo ao limite da máquina usada nos experimentos |
+
+Execute o benchmark com limite máximo de **12 processos**:
 
 ```bash
-# Configuração padrão
-python taxi_benchmark.py
-
-# Limita o número máximo de processos testados
-python taxi_benchmark.py --max-processos 8
-python taxi_benchmark.py -m 16
+python taxi_benchmark.py --max-processos 12
 ```
 
-**Saída:** pasta `graficos_benchmark/` com os gráficos PNG e `benchmark_dados.json` com todos os tempos medidos.
+ou, de forma equivalente:
+
+```bash
+python taxi_benchmark.py -m 12
+```
+
+Com esse comando, o script testa automaticamente:
+
+```text
+1, 2, 4, 8 e 12 processos
+```
+
+Cada configuração é executada **3 vezes** e o tempo apresentado é a média das repetições. Isso reduz o efeito de oscilações do sistema operacional, cache de disco e outros processos em execução na máquina.
+
+**Saída gerada:**
+
+```text
+graficos_benchmark/
+├── benchmark_dados.json
+├── grafico_tempo.png
+├── grafico_speedup.png
+├── grafico_eficiencia.png
+├── grafico_barras_tempo.png
+├── grafico_distribuicao.png
+└── grafico_estatisticas.png
+```
+
+O arquivo `benchmark_dados.json` guarda os tempos médios, speedups e eficiências calculadas. Os arquivos `.png` são os gráficos usados na análise visual do desempenho.
 
 ---
 
@@ -373,18 +408,59 @@ Os valores de soma total, média e outliers diferem entre as duas versões porqu
 
 ---
 
-## 9. Análise de Desempenho
+## 9. Análise de Desempenho e Speedup
 
-### Comparativo sequencial vs. paralelo
+### Como o speedup é calculado
+
+O **speedup** mede quantas vezes a execução paralela foi mais rápida do que a execução de referência. Neste projeto, a referência é o tempo médio obtido com **1 processo** no benchmark.
+
+```text
+Speedup = Tempo com 1 processo / Tempo com N processos
+```
+
+A **eficiência paralela** mostra o quanto dos processos adicionados foi realmente aproveitado:
+
+```text
+Eficiência = Speedup / Número de processos
+```
+
+Exemplo: se o processamento com 1 processo levou 120s e o processamento com 4 processos levou 40s, então:
+
+```text
+Speedup = 120 / 40 = 3,0×
+Eficiência = 3,0 / 4 = 75%
+```
+
+---
+
+### Comparativo entre 1, 2, 4, 8 e 12 processos
+
+A tabela abaixo deve ser preenchida com os valores gerados pelo `taxi_benchmark.py`. Como o benchmark executa cada configuração 3 vezes, o campo **tempo médio** representa uma média mais confiável do que uma única execução isolada.
+
+| Processos | Tempo médio (s) | Speedup | Eficiência | Interpretação |
+|---:|---:|---:|---:|---|
+| 1  | preencher | 1,00× | 100% | Linha de base |
+| 2  | preencher | preencher | preencher | Primeiro ganho com paralelismo |
+| 4  | preencher | preencher | preencher | Tendência de melhoria |
+| 8  | preencher | preencher | preencher | Possível ponto ótimo |
+| 12 | preencher | preencher | preencher | Teste de saturação/overhead |
+
+> Observação: o melhor número de processos não é necessariamente o maior. Em tarefas que envolvem leitura de arquivos grandes, como este CSV de aproximadamente 2 GB, o gargalo pode deixar de ser a CPU e passar a ser o disco. Por isso, é possível que 12 processos não sejam mais rápidos do que 8.
+
+---
+
+### Exemplo de resultado observado
+
+Nos testes realizados em uma máquina com **12 núcleos lógicos**, o melhor resultado observado anteriormente ocorreu com **8 processos**. A partir desse ponto, adicionar mais processos não trouxe ganho proporcional e, em alguns casos, aumentou o tempo total.
 
 | Versão | Processos | Tempo total | Speedup |
-|---|---|---|---|
-| Sequencial | 1 | 142,38s | 1,00× (referência) |
-| Paralela   | 4 | 60,29s  | **2,36×** |
-| Paralela   | 8 | 52,31s  | **2,72×** |
-| Paralela   | 12| 60,30s  | 2,36× |
+|---|---:|---:|---:|
+| Sequencial | 1 | 142,38s | 1,00× |
+| Paralela | 4 | 60,29s | 2,36× |
+| Paralela | 8 | 52,31s | **2,72×** |
+| Paralela | 12 | 60,30s | 2,36× |
 
-O melhor resultado foi obtido com **8 processos**, atingindo speedup de 2,72× em relação à execução sequencial.
+Esses valores podem variar conforme o computador, o tipo de armazenamento, a memória disponível e a quantidade de processos em segundo plano.
 
 ### Por que o speedup não continua crescendo com mais processos?
 
@@ -434,13 +510,34 @@ Esses comportamentos são esperados em sistemas reais e demonstram por que o nú
 
 ## 10. Gráficos Gerados
 
-O script `taxi_benchmark.py` gera automaticamente os seguintes gráficos na pasta `graficos_benchmark/`:
+O script `taxi_benchmark.py` gera automaticamente os seguintes gráficos na pasta `graficos_benchmark/`. Esses gráficos são importantes porque tornam a análise de speedup mais clara do que apenas observar os números em tabela.
 
-| Arquivo | O que mostra |
-|---|---|
-| `grafico_tempo.png` | Curva de tempo de execução total por número de processos |
-| `grafico_speedup.png` | Speedup real medido vs. speedup ideal teórico (linha diagonal) |
-| `grafico_eficiencia.png` | Eficiência percentual por número de processos — queda revela overhead |
-| `grafico_barras_tempo.png` | Barras comparativas de tempo para visualização direta |
-| `grafico_distribuicao.png` | Gráfico de pizza e barras da distribuição de corridas por faixa |
-| `grafico_estatisticas.png` | Box-plot sintético com P25, mediana, P75, P90 e P99 das distâncias |
+| Arquivo | O que mostra | Como interpretar |
+|---|---|---|
+| `grafico_tempo.png` | Tempo médio de execução por número de processos | Quanto menor o tempo, melhor o desempenho |
+| `grafico_speedup.png` | Speedup real comparado ao speedup ideal | Mostra se o ganho acompanha ou se afasta do crescimento linear |
+| `grafico_eficiencia.png` | Eficiência paralela em percentual | Mostra quanto dos processos adicionados foi realmente aproveitado |
+| `grafico_barras_tempo.png` | Comparação direta dos tempos médios | Facilita identificar rapidamente a melhor configuração |
+| `grafico_distribuicao.png` | Distribuição das corridas por faixa de distância | Ajuda a entender o comportamento dos dados processados |
+| `grafico_estatisticas.png` | Resumo estatístico das distâncias | Mostra mediana, quartis, percentis e outliers |
+
+### Gráfico de tempo
+
+O gráfico `grafico_tempo.png` mostra a queda do tempo de execução conforme o número de processos aumenta. O comportamento esperado é uma redução inicial no tempo, principalmente entre 1, 2, 4 e 8 processos.
+
+Entretanto, a curva pode parar de cair ou até subir quando muitos processos passam a disputar os mesmos recursos, especialmente leitura de disco e memória.
+
+### Gráfico de speedup
+
+O gráfico `grafico_speedup.png` compara duas curvas:
+
+- **Speedup ideal:** crescimento linear teórico, onde 2 processos seriam 2× mais rápidos, 4 processos seriam 4× mais rápidos, e assim por diante.
+- **Speedup real:** resultado medido pelo benchmark.
+
+Na prática, o speedup real quase sempre fica abaixo do ideal, pois existem custos de criação de processos, divisão do trabalho, leitura de arquivo e combinação dos resultados.
+
+### Gráfico de eficiência
+
+O gráfico `grafico_eficiencia.png` mostra a porcentagem de aproveitamento dos processos. Uma eficiência próxima de 100% indicaria paralelismo quase perfeito. Porém, em bases grandes lidas de disco, é normal a eficiência cair à medida que mais processos são adicionados.
+
+Por isso, a análise final não deve considerar apenas “quanto maior o número de processos, melhor”, mas sim qual configuração apresenta o melhor equilíbrio entre **tempo total**, **speedup** e **eficiência**.
