@@ -388,11 +388,11 @@ Além dos gráficos principais de desempenho apresentados na seção de speedup,
 
 ### Distribuição das corridas
 
-![Distribuição das corridas](graficos_benchmark/grafico_distribuicao.png)
+![Distribuição das corridas](grafico_distribuicao.png)
 
 ### Estatísticas das distâncias
 
-![Estatísticas das distâncias](graficos_benchmark/grafico_estatisticas.png)
+![Estatísticas das distâncias](grafico_estatisticas.png)
 
 ---
 
