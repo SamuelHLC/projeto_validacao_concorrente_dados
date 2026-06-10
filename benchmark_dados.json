@@ -1,0 +1,93 @@
+{
+  "estrategia": {
+    "descricao": "Leitura paralela por intervalos de bytes via seek()",
+    "vantagens": [
+      "Não carrega o CSV inteiro em memória",
+      "Não envia linhas/dicionários para workers via pickle",
+      "Cada worker lê diretamente sua fatia do arquivo",
+      "Overhead de pickle mínimo: apenas metadados enviados",
+      "I/O feito em paralelo pelos N processos",
+      "Workers retornam apenas ~10 números (métricas agregadas)"
+    ]
+  },
+  "processos": [
+    1,
+    2,
+    4,
+    8,
+    12
+  ],
+  "tempos_medios": [
+    25.80702,
+    10.322452,
+    4.880411,
+    3.257763,
+    3.027878
+  ],
+  "tempos_por_repeticao": {
+    "1": [
+      18.45431,
+      29.455381,
+      29.511369
+    ],
+    "2": [
+      9.816444,
+      11.249195,
+      9.901716
+    ],
+    "4": [
+      4.856644,
+      4.942751,
+      4.841837
+    ],
+    "8": [
+      3.244452,
+      3.296559,
+      3.232277
+    ],
+    "12": [
+      3.038215,
+      3.040613,
+      3.004805
+    ]
+  },
+  "speedups": [
+    1.0,
+    2.5001,
+    5.2879,
+    7.9217,
+    8.5231
+  ],
+  "eficiencias": [
+    100.0,
+    125.0,
+    132.2,
+    99.02,
+    71.03
+  ],
+  "reducoes_percentuais": [
+    0.0,
+    60.0,
+    81.09,
+    87.38,
+    88.27
+  ],
+  "repeticoes": 3,
+  "metricas_corridas": {
+    "total_corridas": 12669621,
+    "total_invalidas": 79365,
+    "soma_total": 171590254.99,
+    "media": 13.5434,
+    "maior_corrida": 15420004.5,
+    "menor_corrida": 0.01,
+    "desvio_padrao": 9874.8783,
+    "distribuicao": {
+      "0–1 mi": 3316638,
+      "1–3 mi": 6180140,
+      "3–7 mi": 2141331,
+      "7–15 mi": 740577,
+      ">15 mi": 290935
+    },
+    "nota_percentis": "Percentis exatos removidos do benchmark para não introduzir overhead de comunicação O(N). Calculáveis em fase separada."
+  }
+}

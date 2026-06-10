@@ -3,34 +3,34 @@
   NYC Yellow Taxi Trip Data - BENCHMARK + GRÁFICOS
   Programação Concorrente e Distribuída
 =============================================================
-  Executa automaticamente com 1, 2, 4, 8 … processos
-  e gera os gráficos:
-    1. Tempo de execução × número de processos
-    2. Speedup (real vs. ideal)
-    3. Eficiência paralela
-    4. Comparativo de tempo em barras
-    5. Distribuição de corridas por faixa  ← NOVO
+  Versão otimizada: leitura paralela por intervalos de bytes
+  ─ Não carrega o CSV inteiro em memória como lista de dicts
+  ─ Não envia milhões de linhas/dicionários para os workers
+  ─ Reduz overhead de pickle (workers recebem apenas metadados)
+  ─ Usa seek() para leitura direta por processo
+  ─ Retorna apenas métricas agregadas (sem lista de distâncias)
 
   Uso:
     python taxi_benchmark.py
-    python taxi_benchmark.py --max-processos 8
+    python taxi_benchmark.py --max-processos 12
+    python taxi_benchmark.py --processos 1,2,4,8,12
+    python taxi_benchmark.py --repeticoes 5
 =============================================================
 """
 
 import csv
+import io
 import time
 import json
 import os
 import sys
 import math
 import argparse
-import multiprocessing as mp
-from math import ceil, log2
+import multiprocessing
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 
 # ─── Configuração ─────────────────────────────────────────
 CSV_FILE   = "yellow_tripdata_2015-01.csv"
@@ -52,133 +52,245 @@ CORES = ["#2196F3", "#4CAF50", "#FF5722", "#9C27B0",
 
 
 # ══════════════════════════════════════════════════════════
-#  Funções de cálculo (reaproveitadas de taxi_parallel.py)
+#  Utilitários — descobre metadados do CSV uma única vez
 # ══════════════════════════════════════════════════════════
 
-def calcular_soma(distancias):
-    return sum(distancias)
+def inspecionar_csv(csv_path):
+    """
+    Lê apenas o cabeçalho do arquivo para descobrir:
+      - índice da coluna trip_distance
+      - posição de byte onde os dados começam (após o cabeçalho)
+      - tamanho total do arquivo em bytes
+    Custo: leitura de uma única linha.
+    """
+    with open(csv_path, "rb") as f:
+        header_bytes = f.readline()
+        data_start   = f.tell()
+        f.seek(0, 2)                    # vai até o fim
+        file_size = f.tell()
 
-def calcular_media(distancias):
-    return calcular_soma(distancias) / len(distancias) if distancias else 0.0
+    header = header_bytes.decode("utf-8").strip().split(",")
+    # Remove BOM se houver (UTF-8 BOM)
+    if header and header[0].startswith("\ufeff"):
+        header[0] = header[0].lstrip("\ufeff")
 
-def calcular_maior_corrida(distancias):
-    return max(distancias) if distancias else 0.0
+    try:
+        col_idx = header.index(DIST_COL)
+    except ValueError:
+        raise RuntimeError(
+            f"Coluna '{DIST_COL}' não encontrada no cabeçalho.\n"
+            f"Colunas disponíveis: {header}"
+        )
 
-def calcular_menor_corrida(distancias):
-    return min(distancias) if distancias else 0.0
+    return col_idx, data_start, file_size
 
-def calcular_desvio_padrao(distancias, media):
-    if len(distancias) < 2:
-        return 0.0
-    return math.sqrt(sum((d - media) ** 2 for d in distancias) / len(distancias))
 
-def calcular_percentil(ordenadas, p):
-    n = len(ordenadas)
-    if n == 0:
-        return 0.0
-    idx = (p / 100) * (n - 1)
-    lo  = int(idx)
-    hi  = min(lo + 1, n - 1)
-    return ordenadas[lo] + (idx - lo) * (ordenadas[hi] - ordenadas[lo])
-
-def calcular_distribuicao(distancias):
-    contagens = {label: 0 for _, _, label in FAIXAS}
-    for d in distancias:
-        for baixo, alto, label in FAIXAS:
-            if baixo < d <= alto:
-                contagens[label] += 1
-                break
-    return contagens
+def calcular_ranges(data_start, file_size, num_processos):
+    """
+    Divide o espaço de bytes da área de dados em `num_processos` intervalos
+    aproximadamente iguais.  Os limites exatos são ajustados dentro do worker
+    para não cortar linhas ao meio (lê até o próximo '\n').
+    """
+    total = file_size - data_start
+    chunk = total / num_processos
+    ranges = []
+    for i in range(num_processos):
+        ini = data_start + int(i * chunk)
+        fim = data_start + int((i + 1) * chunk) if i < num_processos - 1 else file_size
+        ranges.append((ini, fim))
+    return ranges
 
 
 # ══════════════════════════════════════════════════════════
-#  Processamento Map-Reduce (idêntico ao taxi_parallel.py)
+#  Worker — lê diretamente do arquivo via seek()
 # ══════════════════════════════════════════════════════════
-
-def processar_chunk(linhas):
-    soma = contagem = 0
-    maior = float("-inf")
-    menor = float("inf")
-    distancias = []
-    for row in linhas:
-        try:
-            dist = float(row[DIST_COL])
-        except (ValueError, KeyError):
-            continue
-        if dist <= 0:
-            continue
-        soma     += dist
-        contagem += 1
-        distancias.append(dist)
-        if dist > maior: maior = dist
-        if dist < menor: menor = dist
-    return {
-        "soma":       soma,
-        "contagem":   contagem,
-        "maior":      maior if contagem > 0 else 0.0,
-        "menor":      menor if contagem > 0 else 0.0,
-        "distancias": distancias,
-    }
-
+#
+# Por que isso é mais eficiente que a versão anterior?
+#
+#   Versão anterior:
+#     1. Processo principal lê 100 % do CSV → lista de dicts (~GB de RAM)
+#     2. Divide a lista em chunks
+#     3. Envia cada chunk via pickle para os workers (overhead enorme)
+#     4. Workers recebem os dados já prontos e apenas somam
+#
+#   Esta versão:
+#     1. Processo principal lê apenas o cabeçalho (1 linha)
+#     2. Envia para cada worker apenas 4 inteiros + 1 string (< 1 KB via pickle)
+#     3. Cada worker abre o arquivo, faz seek() até seu intervalo e lê
+#        somente a sua fatia — em paralelo com os demais
+#     4. Worker retorna apenas ~10 números (métricas agregadas)
+#
+# Resultado: RAM proporcional a 1/N do arquivo por worker, overhead de
+# pickle praticamente zero, I/O feito em paralelo pelos N processos.
 
 def worker(args):
-    _, linhas = args
-    return processar_chunk(linhas)
+    """
+    Parâmetros recebidos (tudo pequeno, serialização instantânea):
+      csv_path  : caminho do arquivo
+      byte_ini  : posição de início da fatia
+      byte_fim  : posição de fim da fatia
+      col_idx   : índice da coluna trip_distance
+      data_start: byte onde os dados começam (para o 1º worker não pular cabeçalho)
+    """
+    csv_path, byte_ini, byte_fim, col_idx, data_start = args
 
+    soma          = 0.0
+    soma_quad     = 0.0
+    contagem      = 0
+    invalidas     = 0
+    maior         = float("-inf")
+    menor         = float("inf")
+    distribuicao  = {label: 0 for _, _, label in FAIXAS}
 
-def combinar(parciais):
-    soma = contagem = 0
-    maior = float("-inf")
-    menor = float("inf")
-    todas = []
-    for p in parciais:
-        soma     += p["soma"]
-        contagem += p["contagem"]
-        todas    += p.get("distancias", [])
-        if p["maior"] > maior: maior = p["maior"]
-        if p["menor"] < menor: menor = p["menor"]
-    media = calcular_media(todas)
-    todas.sort()
+    with open(csv_path, "rb") as f:
+        # Avança até o início da fatia
+        f.seek(byte_ini)
+
+        # Se não é o início dos dados, avança até o próximo '\n'
+        # para evitar leitura de linha cortada ao meio
+        if byte_ini != data_start:
+            f.readline()
+
+        while True:
+            pos  = f.tell()
+            line = f.readline()
+            if not line or pos >= byte_fim:
+                break
+
+            try:
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if not decoded:
+                    continue
+                partes = decoded.split(",")
+                dist   = float(partes[col_idx])
+            except (ValueError, IndexError):
+                invalidas += 1
+                continue
+
+            if dist <= 0:
+                invalidas += 1
+                continue
+
+            soma      += dist
+            soma_quad += dist * dist
+            contagem  += 1
+            if dist > maior: maior = dist
+            if dist < menor: menor = dist
+
+            for baixo, alto, label in FAIXAS:
+                if baixo < dist <= alto:
+                    distribuicao[label] += 1
+                    break
+
     return {
-        "soma_total":     round(soma,  4),
-        "media":          round(media, 4),
-        "maior_corrida":  round(maior, 4),
-        "menor_corrida":  round(menor, 4),
-        "total_corridas": contagem,
-        "desvio_padrao":  round(calcular_desvio_padrao(todas, media), 4),
-        "mediana":        round(calcular_percentil(todas, 50), 4),
-        "percentil_25":   round(calcular_percentil(todas, 25), 4),
-        "percentil_75":   round(calcular_percentil(todas, 75), 4),
-        "percentil_90":   round(calcular_percentil(todas, 90), 4),
-        "percentil_99":   round(calcular_percentil(todas, 99), 4),
-        "distribuicao":   calcular_distribuicao(todas),
+        "soma":         soma,
+        "soma_quad":    soma_quad,
+        "contagem":     contagem,
+        "invalidas":    invalidas,
+        "maior":        maior if contagem > 0 else 0.0,
+        "menor":        menor if contagem > 0 else 0.0,
+        "distribuicao": distribuicao,
     }
 
 
-def ler_csv(csv_path):
-    linhas = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            linhas.append(row)
-    return linhas
+# ══════════════════════════════════════════════════════════
+#  Reduce — combina resultados parciais
+# ══════════════════════════════════════════════════════════
+
+def combinar(parciais):
+    soma      = 0.0
+    soma_quad = 0.0
+    contagem  = 0
+    invalidas = 0
+    maior     = float("-inf")
+    menor     = float("inf")
+    dist_total = {label: 0 for _, _, label in FAIXAS}
+
+    for p in parciais:
+        soma      += p["soma"]
+        soma_quad += p["soma_quad"]
+        contagem  += p["contagem"]
+        invalidas += p["invalidas"]
+        if p["maior"] > maior: maior = p["maior"]
+        if p["menor"] < menor: menor = p["menor"]
+        for label in dist_total:
+            dist_total[label] += p["distribuicao"].get(label, 0)
+
+    media = soma / contagem if contagem > 0 else 0.0
+
+    # Desvio padrão via fórmula de variância online (não precisa da lista completa)
+    # Var = E[x²] - (E[x])²
+    variancia = (soma_quad / contagem) - (media ** 2) if contagem > 0 else 0.0
+    desvio    = math.sqrt(max(0.0, variancia))
+
+    return {
+        "total_corridas": contagem,
+        "total_invalidas": invalidas,
+        "soma_total":     round(soma,   4),
+        "media":          round(media,  4),
+        "maior_corrida":  round(maior,  4),
+        "menor_corrida":  round(menor,  4),
+        "desvio_padrao":  round(desvio, 4),
+        "distribuicao":   dist_total,
+        # Mediana e percentis exatos são omitidos do tempo de benchmark:
+        # eles exigem ordenação global e coleta da lista completa de distâncias
+        # de todos os workers, o que introduz overhead de comunicação O(N) e
+        # invalida a medição pura do paralelismo.  Para obtê-los basta adicionar
+        # uma fase extra pós-benchmark que coleta e ordena as distâncias.
+        "nota_percentis": (
+            "Percentis exatos removidos do benchmark para não introduzir "
+            "overhead de comunicação O(N). Calculáveis em fase separada."
+        ),
+    }
 
 
-def dividir(linhas, n):
-    sz = ceil(len(linhas) / n)
-    return [linhas[i : i + sz] for i in range(0, len(linhas), sz)]
+# ══════════════════════════════════════════════════════════
+#  Execução de uma rodada com N processos
+# ══════════════════════════════════════════════════════════
 
-
-def executar(linhas_cache, num_processos):
-    """Retorna (tempo_processamento, resultado_completo)."""
-    chunks = dividir(linhas_cache, num_processos)
-    args   = list(enumerate(chunks))
+def executar(csv_path, col_idx, data_start, file_size, num_processos):
+    """Retorna (tempo_processamento, resultado_combinado)."""
+    ranges = calcular_ranges(data_start, file_size, num_processos)
+    args   = [
+        (csv_path, ini, fim, col_idx, data_start)
+        for ini, fim in ranges
+    ]
     t0 = time.perf_counter()
-    with mp.Pool(processes=num_processos) as pool:
+    with multiprocessing.Pool(processes=num_processos) as pool:
         parciais = pool.map(worker, args)
     resultado = combinar(parciais)
     tempo = time.perf_counter() - t0
     return tempo, resultado
+
+
+# ══════════════════════════════════════════════════════════
+#  Validação de consistência entre configurações
+# ══════════════════════════════════════════════════════════
+
+def validar_resultado(ref, novo, n_proc, tolerancia=0.01):
+    """
+    Compara métricas-chave do resultado com N processos contra o resultado
+    de referência (1 processo).  Aceita diferença de até `tolerancia` em
+    valores contínuos (arredondamento de ponto flutuante em ordem diferente).
+    """
+    campos = ["total_corridas", "soma_total", "maior_corrida", "menor_corrida"]
+    ok = True
+    for campo in campos:
+        v_ref = ref.get(campo, 0)
+        v_new = novo.get(campo, 0)
+        if isinstance(v_ref, (int, float)) and v_ref != 0:
+            diff = abs(v_ref - v_new) / abs(v_ref)
+            if diff > tolerancia:
+                print(f"  [AVISO] {n_proc} proc — '{campo}' difere "
+                      f"({v_ref} vs {v_new}, diff={diff:.4%})")
+                ok = False
+        elif v_ref != v_new:
+            print(f"  [AVISO] {n_proc} proc — '{campo}' difere "
+                  f"({v_ref} vs {v_new})")
+            ok = False
+    if ok:
+        print(f"  [✓] {n_proc} processo(s): resultados consistentes com a referência.")
+    return ok
 
 
 # ══════════════════════════════════════════════════════════
@@ -217,7 +329,7 @@ def grafico_tempo(processos, tempos, pasta):
 def grafico_speedup(processos, tempos, pasta):
     t1    = tempos[0]
     real  = [t1 / t for t in tempos]
-    ideal = processos[:]
+    ideal = list(processos)
     fig, ax = _fig_base(
         "Speedup × Número de Processos",
         "Número de Processos", "Speedup",
@@ -250,7 +362,7 @@ def grafico_eficiencia(processos, tempos, pasta):
                     color=CORES[2], edgecolor="white", width=0.6)
     ax.axhline(100, linestyle="--", color="gray", linewidth=1.2,
                label="Eficiência ideal (100%)")
-    ax.set_ylim(0, 120)
+    ax.set_ylim(0, 130)
     for bar, val in zip(barras, eficiencia):
         ax.text(bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + 2,
@@ -274,7 +386,7 @@ def grafico_barras_tempo(processos, tempos, pasta):
                     color=cores_barras, edgecolor="white", width=0.55)
     for bar, val in zip(barras, tempos):
         ax.text(bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.01,
+                bar.get_height() + 0.005,
                 f"{val:.2f}s", ha="center", va="bottom", fontsize=9)
     fig.tight_layout()
     path = os.path.join(pasta, "grafico_barras_tempo.png")
@@ -284,7 +396,6 @@ def grafico_barras_tempo(processos, tempos, pasta):
 
 
 def grafico_distribuicao(distribuicao: dict, total_corridas: int, pasta: str):
-    """NOVO — Pizza + barras com a distribuição de corridas por faixa."""
     labels  = list(distribuicao.keys())
     valores = list(distribuicao.values())
     pcts    = [v / total_corridas * 100 if total_corridas > 0 else 0 for v in valores]
@@ -293,25 +404,18 @@ def grafico_distribuicao(distribuicao: dict, total_corridas: int, pasta: str):
     fig.suptitle("Distribuição de Corridas por Faixa de Distância",
                  fontsize=14, fontweight="bold")
 
-    # Pizza
     wedges, texts, autotexts = ax1.pie(
-        valores,
-        labels=labels,
-        colors=CORES[:len(labels)],
-        autopct="%1.1f%%",
-        startangle=140,
-        pctdistance=0.82,
+        valores, labels=labels, colors=CORES[:len(labels)],
+        autopct="%1.1f%%", startangle=140, pctdistance=0.82,
     )
     for at in autotexts:
         at.set_fontsize(9)
     ax1.set_title("Proporção (%)", fontsize=11)
 
-    # Barras horizontais
-    barras = ax2.barh(labels, pcts,
-                      color=CORES[:len(labels)], edgecolor="white")
+    barras = ax2.barh(labels, pcts, color=CORES[:len(labels)], edgecolor="white")
     ax2.set_xlabel("% das corridas", fontsize=11)
     ax2.set_title("Distribuição (%)", fontsize=11)
-    ax2.set_xlim(0, max(pcts) * 1.18)
+    ax2.set_xlim(0, max(pcts) * 1.18 if pcts else 1)
     for bar, pct, qtd in zip(barras, pcts, valores):
         ax2.text(
             bar.get_width() + 0.3,
@@ -329,39 +433,40 @@ def grafico_distribuicao(distribuicao: dict, total_corridas: int, pasta: str):
 
 
 def grafico_estatisticas(resultado: dict, pasta: str):
-    """NOVO — Box-plot sintético com os percentis calculados."""
+    """Box-plot sintético com as estatísticas disponíveis."""
+    media  = resultado["media"]
+    desvio = resultado["desvio_padrao"]
+    menor  = resultado["menor_corrida"]
+    maior  = resultado["maior_corrida"]
+
+    # Estimativas de percentis baseadas em média ± desvio
+    # (exatas exigiriam ordenação global, removida do benchmark)
+    p25_est = max(menor, media - 0.675 * desvio)
+    p75_est = min(maior, media + 0.675 * desvio)
+
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.set_title("Resumo Estatístico das Distâncias (milhas)",
-                 fontsize=14, fontweight="bold", pad=12)
+    ax.set_title("Resumo Estatístico das Distâncias (milhas)\n"
+                 "(P25/P75 estimados via média±desvio; mediana exata removida do benchmark)",
+                 fontsize=12, fontweight="bold", pad=12)
 
-    # Simula box-plot usando os percentis disponíveis
-    p25 = resultado["percentil_25"]
-    med = resultado["mediana"]
-    p75 = resultado["percentil_75"]
-    p10 = resultado.get("percentil_10", p25 * 0.6)  # aproximação
-    p90 = resultado["percentil_90"]
-
-    # Caixa
-    ax.barh(0, p75 - p25, left=p25, height=0.4,
-            color=CORES[0], alpha=0.7, label="IQR (P25–P75)")
-    # Mediana
-    ax.vlines(med, -0.2, 0.2, color="white", linewidth=3, zorder=5)
-    ax.vlines(med, -0.2, 0.2, color=CORES[1], linewidth=2,
-              zorder=6, label=f"Mediana = {med:.2f} mi")
+    # Caixa IQR estimada
+    ax.barh(0, p75_est - p25_est, left=p25_est, height=0.4,
+            color=CORES[0], alpha=0.7, label="IQR estimado (P25–P75)")
+    # Média
+    ax.vlines(media, -0.2, 0.2, color="white", linewidth=3, zorder=5)
+    ax.vlines(media, -0.2, 0.2, color=CORES[1], linewidth=2,
+              zorder=6, label=f"Média = {media:.2f} mi")
     # Bigodes
-    ax.hlines(0, p10, p25, color=CORES[0], linewidth=2)
-    ax.hlines(0, p75, p90, color=CORES[0], linewidth=2)
-    ax.vlines([p10, p90], -0.12, 0.12, color=CORES[0], linewidth=2)
+    ax.hlines(0, menor, p25_est, color=CORES[0], linewidth=2)
+    ax.hlines(0, p75_est, maior, color=CORES[0], linewidth=2)
+    ax.vlines([menor, maior], -0.12, 0.12, color=CORES[0], linewidth=2)
 
-    # Anotações chave
     for valor, label, offset in [
-        (resultado["menor_corrida"], "Mín", -0.32),
-        (p25,  "P25",    -0.32),
-        (med,  "P50",     0.32),
-        (p75,  "P75",    -0.32),
-        (p90,  "P90",     0.32),
-        (resultado["maior_corrida"], "Máx", 0.32),
-        (resultado["media"], "Média", 0.52),
+        (menor,  "Mín",   -0.35),
+        (p25_est, "P25*", -0.35),
+        (media,  "Média",  0.35),
+        (p75_est, "P75*",  0.35),
+        (maior,  "Máx",    0.35),
     ]:
         ax.annotate(
             f"{label}\n{valor:.2f}",
@@ -372,12 +477,11 @@ def grafico_estatisticas(resultado: dict, pasta: str):
 
     ax.set_yticks([])
     ax.set_xlabel("Distância (milhas)", fontsize=12)
-    ax.set_xlim(
-        resultado["menor_corrida"] * 0.8,
-        min(resultado["maior_corrida"], resultado["percentil_99"] * 1.5)
-    )
+    ax.set_xlim(menor * 0.8, min(maior, media + 8 * desvio))
     ax.grid(True, axis="x", linestyle="--", alpha=0.4)
     ax.legend(loc="upper right")
+    ax.text(0.01, 0.02, "* P25 e P75 estimados. Ver nota_percentis no JSON.",
+            transform=ax.transAxes, fontsize=7, color="gray")
     fig.tight_layout()
     path = os.path.join(pasta, "grafico_estatisticas.png")
     fig.savefig(path, dpi=150)
@@ -396,96 +500,154 @@ def main():
     parser.add_argument(
         "--max-processos", "-m",
         type=int,
-        default=min(mp.cpu_count(), 8),
-        help="Máximo de processos a testar (padrão: núcleos da máquina, até 8)",
+        default=min(multiprocessing.cpu_count(), 8),
+        help="Máximo de processos; gera potências de 2 até esse valor (padrão: núcleos, até 8)",
+    )
+    parser.add_argument(
+        "--processos", "-p",
+        type=str,
+        default=None,
+        help="Lista manual de configurações, ex: 1,2,4,8,12",
+    )
+    parser.add_argument(
+        "--repeticoes", "-r",
+        type=int,
+        default=REPETICOES,
+        help=f"Repetições por configuração (padrão: {REPETICOES})",
     )
     args = parser.parse_args()
+    repeticoes = max(1, args.repeticoes)
 
-    csv_path = CSV_FILE
+    # ── Monta lista de configurações ──
+    if args.processos:
+        try:
+            processos_list = sorted(set(int(x.strip()) for x in args.processos.split(",")))
+        except ValueError:
+            print("[ERRO] --processos deve ser uma lista de inteiros, ex: 1,2,4,8,12")
+            sys.exit(1)
+    else:
+        max_p = max(1, args.max_processos)
+        processos_list = [1]
+        p = 2
+        while p <= max_p:
+            processos_list.append(p)
+            p *= 2
+        if max_p not in processos_list:
+            processos_list.append(max_p)
+        processos_list = sorted(set(processos_list))
+
+    # ── Verifica arquivo ──
+    csv_path = CSV_FILE  # definida corretamente dentro de main()
     if not os.path.exists(csv_path):
         print(f"[ERRO] Arquivo não encontrado: {csv_path}")
         sys.exit(1)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    max_p = args.max_processos
-    processos_list = sorted(
-        set([1] + [2**i for i in range(1, int(log2(max(max_p, 2))) + 1)
-                   if 2**i <= max_p])
-    )
-    if max_p not in processos_list:
-        processos_list.append(max_p)
-
     print("=" * 62)
-    print("  NYC Yellow Taxi  —  BENCHMARK")
+    print("  NYC Yellow Taxi  —  BENCHMARK (leitura por byte-range)")
     print(f"  Configurações : {processos_list} processos")
-    print(f"  Repetições    : {REPETICOES} por configuração")
+    print(f"  Repetições    : {repeticoes} por configuração")
+    print(f"  Estratégia    : seek() por worker, sem carga em memória")
     print("=" * 62)
 
-    print("\n  Lendo CSV... ", end="", flush=True)
-    t_csv0 = time.perf_counter()
-    linhas = ler_csv(csv_path)
-    t_csv1 = time.perf_counter()
-    print(f"OK  ({len(linhas):,} linhas, {t_csv1 - t_csv0:.2f}s)")
+    # ── Inspeciona CSV (apenas o cabeçalho) ──
+    print("\n  Inspecionando cabeçalho do CSV... ", end="", flush=True)
+    try:
+        col_idx, data_start, file_size = inspecionar_csv(csv_path)
+    except RuntimeError as e:
+        print(f"\n[ERRO] {e}")
+        sys.exit(1)
+    print(f"OK  (coluna '{DIST_COL}' = índice {col_idx}, "
+          f"dados a partir do byte {data_start:,}, "
+          f"tamanho total: {file_size / 1_000_000:.1f} MB)")
 
-    resultados_tempo = {}
-    resultado_final  = None
+    resultados_tempo   = {}
+    tempos_por_rep     = {}
+    resultado_referencia = None
 
     for n in processos_list:
         tempos_exec = []
         print(f"\n  Testando {n:2d} processo(s)...", end=" ", flush=True)
-        for rep in range(REPETICOES):
-            t, res = executar(linhas, n)
-            tempos_exec.append(t)
-            if resultado_final is None:
-                resultado_final = res   # guarda métricas da 1ª execução
+        resultado_n = None
+        for rep in range(repeticoes):
+            t, res = executar(csv_path, col_idx, data_start, file_size, n)
+            tempos_exec.append(round(t, 6))
+            resultado_n = res
             print(f"[rep {rep + 1}: {t:.3f}s]", end=" ", flush=True)
 
-        media_t = sum(tempos_exec) / REPETICOES
+        media_t = sum(tempos_exec) / repeticoes
         resultados_tempo[n] = round(media_t, 6)
+        tempos_por_rep[n]   = tempos_exec
+
+        if resultado_referencia is None:
+            resultado_referencia = resultado_n
+        else:
+            validar_resultado(resultado_referencia, resultado_n, n)
+
         print(f"  → média: {media_t:.4f}s")
 
-    # ── Tabela de benchmark ──
+    # ── Tabela resumo ──
     t_seq = resultados_tempo[1]
+    ps    = processos_list
+    ts    = [resultados_tempo[n] for n in ps]
+
     print("\n" + "=" * 62)
-    print(f"  {'Processos':>10}  {'Tempo (s)':>12}  {'Speedup':>10}  {'Eficiência':>12}")
-    print("  " + "-" * 58)
-    for n in processos_list:
-        t  = resultados_tempo[n]
+    print(f"  {'Processos':>10}  {'Tempo (s)':>12}  {'Speedup':>10}  "
+          f"{'Eficiência':>12}  {'Redução':>10}")
+    print("  " + "-" * 60)
+    for n, t in zip(ps, ts):
         sp = t_seq / t
         ef = sp / n * 100
-        print(f"  {n:>10}  {t:>12.4f}  {sp:>10.3f}x  {ef:>11.1f}%")
+        red = (1 - t / t_seq) * 100
+        print(f"  {n:>10}  {t:>12.4f}  {sp:>10.3f}x  "
+              f"{ef:>11.1f}%  {red:>9.1f}%")
     print("=" * 62)
 
-    # ── Exibe métricas das corridas ──
-    if resultado_final:
+    # ── Métricas das corridas ──
+    if resultado_referencia:
+        r = resultado_referencia
         print(f"\n  {'─' * 58}")
-        print(f"  MÉTRICAS DAS CORRIDAS (processamento com 1 processo)")
+        print(f"  MÉTRICAS DAS CORRIDAS")
         print(f"  {'─' * 58}")
-        print(f"  {'Total de corridas':<30}: {resultado_final['total_corridas']:>14,}")
-        print(f"  {'Soma total (mi)':<30}: {resultado_final['soma_total']:>14,.4f}")
-        print(f"  {'Média (mi)':<30}: {resultado_final['media']:>14.4f}")
-        print(f"  {'Mediana (mi)':<30}: {resultado_final['mediana']:>14.4f}")
-        print(f"  {'Maior corrida (mi)':<30}: {resultado_final['maior_corrida']:>14.4f}")
-        print(f"  {'Menor corrida (mi)':<30}: {resultado_final['menor_corrida']:>14.4f}")
-        print(f"  {'Desvio padrão (mi)':<30}: {resultado_final['desvio_padrao']:>14.4f}")
+        print(f"  {'Total de corridas válidas':<32}: {r['total_corridas']:>12,}")
+        print(f"  {'Total de linhas inválidas':<32}: {r['total_invalidas']:>12,}")
+        print(f"  {'Soma total (mi)':<32}: {r['soma_total']:>12,.4f}")
+        print(f"  {'Média (mi)':<32}: {r['media']:>12.4f}")
+        print(f"  {'Maior corrida (mi)':<32}: {r['maior_corrida']:>12.4f}")
+        print(f"  {'Menor corrida (mi)':<32}: {r['menor_corrida']:>12.4f}")
+        print(f"  {'Desvio padrão (mi)':<32}: {r['desvio_padrao']:>12.4f}")
 
     # ── Salva JSON ──
-    ps = processos_list
-    ts = [resultados_tempo[n] for n in ps]
+    speedups    = [round(t_seq / resultados_tempo[n], 4) for n in ps]
+    eficiencias = [round((t_seq / resultados_tempo[n]) / n * 100, 2) for n in ps]
+    reducoes    = [round((1 - resultados_tempo[n] / t_seq) * 100, 2) for n in ps]
+
     bench_data = {
-        "processos":   ps,
-        "tempos":      ts,
-        "speedups":    [round(t_seq / resultados_tempo[n], 4) for n in ps],
-        "eficiencias": [round((t_seq / resultados_tempo[n]) / n * 100, 2) for n in ps],
-        "repeticoes":  REPETICOES,
+        "estrategia": {
+            "descricao": "Leitura paralela por intervalos de bytes via seek()",
+            "vantagens": [
+                "Não carrega o CSV inteiro em memória",
+                "Não envia linhas/dicionários para workers via pickle",
+                "Cada worker lê diretamente sua fatia do arquivo",
+                "Overhead de pickle mínimo: apenas metadados enviados",
+                "I/O feito em paralelo pelos N processos",
+                "Workers retornam apenas ~10 números (métricas agregadas)",
+            ],
+        },
+        "processos":            ps,
+        "tempos_medios":        ts,
+        "tempos_por_repeticao": {str(n): tempos_por_rep[n] for n in ps},
+        "speedups":             speedups,
+        "eficiencias":          eficiencias,
+        "reducoes_percentuais": reducoes,
+        "repeticoes":           repeticoes,
         "metricas_corridas": {
-            k: v for k, v in (resultado_final or {}).items()
-            if k != "distancias"
+            k: v for k, v in (resultado_referencia or {}).items()
         },
     }
     json_path = os.path.join(OUTPUT_DIR, "benchmark_dados.json")
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(bench_data, f, indent=2, ensure_ascii=False)
     print(f"\n  Dados salvos em: {json_path}")
 
@@ -496,16 +658,18 @@ def main():
     grafico_eficiencia(ps, ts, OUTPUT_DIR)
     grafico_barras_tempo(ps, ts, OUTPUT_DIR)
 
-    if resultado_final:
+    if resultado_referencia:
         grafico_distribuicao(
-            resultado_final["distribuicao"],
-            resultado_final["total_corridas"],
+            resultado_referencia["distribuicao"],
+            resultado_referencia["total_corridas"],
             OUTPUT_DIR,
         )
-        grafico_estatisticas(resultado_final, OUTPUT_DIR)
+        grafico_estatisticas(resultado_referencia, OUTPUT_DIR)
 
     print(f"\n  ✅ Benchmark concluído! Gráficos em ./{OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":
+    # Compatibilidade com Windows (multiprocessing com spawn)
+    multiprocessing.freeze_support()
     main()
