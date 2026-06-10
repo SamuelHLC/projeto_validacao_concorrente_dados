@@ -283,19 +283,19 @@ Em termos práticos, a paralelização reduziu o tempo médio de **25,81 segundo
 
 #### Tempo médio por quantidade de processos
 
-![Tempo médio por quantidade de processos](graficos_benchmark/grafico_tempo.png)
+![Tempo médio por quantidade de processos](grafico_tempo.png)
 
 #### Speedup obtido
 
-![Speedup obtido](graficos_benchmark/grafico_speedup.png)
+![Speedup obtido](grafico_speedup.png)
 
 #### Eficiência paralela
 
-![Eficiência paralela](graficos_benchmark/grafico_eficiencia.png)
+![Eficiência paralela](grafico_eficiencia.png)
 
 #### Comparativo em barras
 
-![Comparativo em barras](graficos_benchmark/grafico_barras_tempo.png)
+![Comparativo em barras](grafico_barras_tempo.png)
 
 ### Leitura rápida do speedup
 
@@ -418,11 +418,11 @@ Além dos gráficos principais de desempenho apresentados na seção de speedup,
 
 ### Distribuição das corridas
 
-![Distribuição das corridas](graficos_benchmark/grafico_distribuicao.png)
+![Distribuição das corridas](grafico_distribuicao.png)
 
 ### Estatísticas das distâncias
 
-![Estatísticas das distâncias](graficos_benchmark/grafico_estatisticas.png)
+![Estatísticas das distâncias](grafico_estatisticas.png)
 
 ---
 
