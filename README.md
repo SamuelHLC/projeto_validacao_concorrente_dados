@@ -30,7 +30,7 @@ Este projeto aplica técnicas de **programação concorrente** ao problema de an
 
 O problema se enquadra em **paralelismo de dados**: a mesma operação é aplicada sobre partes independentes do dataset. Esse padrão se aproxima do modelo **Map-Reduce**, no qual cada processo calcula resultados parciais e o processo principal combina essas parciais para produzir o resultado final.
 
-Neste benchmark, o processamento com **1 processo** levou **282,07 segundos** em média. A melhor configuração testada foi com **12 processos**, levando **103,35 segundos**, com speedup de **2,73×**.
+Neste benchmark otimizado, o processamento com **1 processo** levou **25,81 segundos** em média. A melhor configuração testada foi com **12 processos**, levando **3,03 segundos**, com speedup de **8,52×**.
 
 ---
 
@@ -230,11 +230,13 @@ graficos_benchmark/benchmark_dados.json
 
 Esse arquivo é a fonte oficial da tabela de desempenho deste README.
 
+> Observação: o benchmark otimizado mede principalmente métricas agregáveis, como soma, média, mínimo, máximo, desvio padrão e distribuição por faixas. Mediana e percentis exatos são mantidos na execução estatística completa, mas não entram no tempo principal do benchmark para evitar ordenação global e retorno de milhões de distâncias entre processos.
+
 ---
 
 ## 9. Speedup e Resultados do Benchmark
 
-> **Seção principal para avaliação do desempenho:** aqui estão reunidos o speedup, a tabela comparativa e os principais gráficos do benchmark.
+> **Seção principal para avaliação do desempenho:** aqui estão reunidos o speedup, a tabela comparativa, os gráficos principais e a explicação do comportamento observado no paralelismo.
 
 Os resultados abaixo foram extraídos de:
 
@@ -248,42 +250,52 @@ O benchmark foi executado com **1, 2, 4, 8 e 12 processos**, com **3 repetiçõe
 
 | Indicador | Resultado |
 |---|---:|
-| Tempo com 1 processo | 282,07 s |
-| Melhor tempo paralelo | 103,35 s |
+| Tempo com 1 processo | 25,81 s |
+| Melhor tempo paralelo | 3,03 s |
 | Melhor configuração | 12 processos |
-| Melhor speedup | 2,73× |
-| Redução de tempo vs. 1 processo | 63,36% |
-| Eficiência com 12 processos | 22,74% |
+| Melhor speedup | 8,52× |
+| Redução de tempo vs. 1 processo | 88,27% |
+| Eficiência aparente com 12 processos | 71,03% |
 
-Em termos práticos, a paralelização reduziu o tempo médio de **282,07 segundos** para **103,35 segundos**, alcançando speedup de **2,73×** na melhor configuração testada.
+Em termos práticos, a paralelização reduziu o tempo médio de **25,81 segundos** para **3,03 segundos**, alcançando speedup de **8,52×** na melhor configuração testada.
 
 ### Tabela comparativa de desempenho
 
-| Processos | Tempo médio | Speedup | Eficiência | Redução vs. 1 processo |
+| Processos | Tempo médio | Speedup | Eficiência aparente | Redução vs. 1 processo |
 |---:|---:|---:|---:|---:|
-| 1 | 282,07 s | 1,00× | 100,00% | 0,00% |
-| 2 | 145,56 s | 1,94× | 96,89% | 48,40% |
-| 4 | 106,79 s | 2,64× | 66,03% | 62,14% |
-| 8 | 110,63 s | 2,55× | 31,87% | 60,78% |
-| 12 | 103,35 s | 2,73× | 22,74% | 63,36% |
+| 1 | 25,81 s | 1,00× | 100,00% | 0,00% |
+| 2 | 10,32 s | 2,50× | 125,00% | 60,00% |
+| 4 | 4,88 s | 5,29× | 132,20% | 81,09% |
+| 8 | 3,26 s | 7,92× | 99,02% | 87,38% |
+| 12 | 3,03 s | 8,52× | 71,03% | 88,27% |
+
+### Tempos por repetição
+
+| Processos | Repetição 1 | Repetição 2 | Repetição 3 | Média |
+|---:|---:|---:|---:|---:|
+| 1 | 18,45 s | 29,46 s | 29,51 s | 25,81 s |
+| 2 | 9,82 s | 11,25 s | 9,90 s | 10,32 s |
+| 4 | 4,86 s | 4,94 s | 4,84 s | 4,88 s |
+| 8 | 3,24 s | 3,30 s | 3,23 s | 3,26 s |
+| 12 | 3,04 s | 3,04 s | 3,00 s | 3,03 s |
 
 ### Gráficos principais do benchmark
 
 #### Tempo médio por quantidade de processos
 
-![Tempo médio por quantidade de processos](grafico_tempo.png)
+![Tempo médio por quantidade de processos](graficos_benchmark/grafico_tempo.png)
 
 #### Speedup obtido
 
-![Speedup obtido](grafico_speedup.png)
+![Speedup obtido](graficos_benchmark/grafico_speedup.png)
 
 #### Eficiência paralela
 
-![Eficiência paralela](grafico_eficiencia.png)
+![Eficiência paralela](graficos_benchmark/grafico_eficiencia.png)
 
 #### Comparativo em barras
 
-![Comparativo em barras](grafico_barras_tempo.png)
+![Comparativo em barras](graficos_benchmark/grafico_barras_tempo.png)
 
 ### Leitura rápida do speedup
 
@@ -296,23 +308,37 @@ Speedup = Tempo com 1 processo / Tempo com N processos
 Para a melhor execução:
 
 ```text
-Speedup = 282,07 / 103,35
-Speedup = 2,73×
+Speedup = 25,81 / 3,03
+Speedup = 8,52×
 ```
 
-A melhor configuração medida foi com **12 processos**, atingindo **2,73×** de speedup. Isso significa que, nesse ambiente, o processamento paralelo foi aproximadamente **2,73 vezes mais rápido** que a execução com 1 processo.
+A melhor configuração medida foi com **12 processos**, atingindo **8,52×** de speedup. Isso significa que, nesse ambiente, o processamento paralelo foi aproximadamente **8,52 vezes mais rápido** que a execução com 1 processo.
+
+### Por que os resultados de 8 e 12 processos ficaram próximos?
+
+O ganho mais forte aconteceu entre **1 e 8 processos**, quando o tempo caiu de **25,81 s** para **3,26 s**. A partir desse ponto, o ganho adicional ficou menor: com **12 processos**, o tempo foi **3,03 s**. Ou seja, aumentar de 8 para 12 processos reduziu apenas cerca de **0,23 s**.
+
+Esse comportamento indica uma região de **saturação**. Depois que o processamento já está bem dividido, a execução passa a ser limitada por fatores como largura de banda de leitura do SSD, cache, memória RAM, criação/coordenação de processos e etapa de redução dos resultados. Assim, adicionar mais processos ainda melhora o tempo total, mas com ganho marginal menor.
+
+### Observação sobre speedup superlinear
+
+O benchmark apresentou speedup acima do ideal linear em algumas configurações, especialmente com **2 e 4 processos**. Isso aparece quando a eficiência calculada passa de 100%.
+
+Esse resultado não significa que a fórmula esteja errada. Ele indica um **speedup superlinear aparente**, que pode ocorrer quando a execução paralela aproveita melhor cache, divisão de leitura, escalonamento do sistema operacional e múltiplos núcleos físicos do processador. Além disso, a versão otimizada não envia milhões de linhas para os workers: cada processo lê diretamente sua faixa do arquivo com `seek()` e retorna apenas métricas agregadas. Isso reduz fortemente o overhead de comunicação quando comparado à versão anterior.
+
+Mesmo assim, esse resultado deve ser interpretado com cuidado. Em termos acadêmicos, a conclusão correta é que a implementação otimizada reduziu o gargalo artificial de serialização e tornou o processamento muito mais eficiente, mas o speedup acima de 100% de eficiência é um efeito prático do ambiente de execução, cache, I/O e variação entre repetições, não uma garantia teórica de escalabilidade perfeita.
 
 ### Interpretação breve dos resultados
 
-O ganho de desempenho foi mais forte entre **1 e 4 processos**, quando o tempo caiu de **282,07 s** para **106,79 s**. A partir de **8 processos**, o ganho deixou de crescer de forma linear, indicando possível saturação por leitura de disco, overhead de criação/coordenação dos processos e combinação dos resultados parciais.
+Os resultados mostram que a otimização do código mudou o perfil do benchmark. Antes, parte importante do tempo era consumida por carregamento do CSV inteiro em memória e envio de grandes estruturas Python para os processos. Agora, o benchmark trabalha com intervalos de bytes, reduzindo `pickle`, consumo de memória e transferência de dados entre processos.
 
-Mesmo assim, a execução com **12 processos** apresentou o menor tempo geral, com redução aproximada de **63,36%** em relação à execução com 1 processo.
+A melhor configuração foi **12 processos**, com tempo médio de **3,03 s**, speedup de **8,52×** e redução de **88,27%** em relação à execução com 1 processo. O ganho entre 8 e 12 processos foi menor, o que reforça que o sistema já estava próximo de saturar recursos compartilhados.
 
 ---
 
 ## 10. Métricas e Distribuição das Corridas
 
-As métricas abaixo demonstram que o processamento paralelo preservou os resultados estatísticos do dataset analisado.
+As métricas abaixo demonstram que o processamento preservou os resultados estatísticos do dataset analisado. As métricas de mediana e percentis vêm da execução estatística completa registrada em `sequential_results.json` e `resultado_p12.json`; no benchmark otimizado, elas foram removidas do tempo principal para evitar ordenação global e transferência de milhões de distâncias entre processos.
 
 ### Métricas estatísticas
 
@@ -352,14 +378,16 @@ A eficiência mede o aproveitamento médio dos processos utilizados:
 Eficiência = Speedup / Número de processos
 ```
 
-Para a melhor execução:
+Para a melhor execução com 12 processos:
 
 ```text
-Eficiência = 2,73 / 12
-Eficiência = 22,74%
+Eficiência = 8,52 / 12
+Eficiência = 71,03%
 ```
 
-A eficiência diminui conforme o número de processos aumenta porque nem todo o programa é paralelizável e porque existem custos adicionais de coordenação. Com 2 processos, a eficiência ficou em **96,89%**; com 12 processos, apesar do menor tempo total, a eficiência caiu para **22,74%**.
+No benchmark otimizado, as configurações com 2 e 4 processos apresentaram eficiência aparente acima de 100%, caracterizando **speedup superlinear aparente**. Isso pode ocorrer em medições reais quando a execução paralela melhora o uso de cache, reduz gargalos do processo único, distribui melhor a leitura do arquivo e aproveita melhor os núcleos físicos do processador.
+
+Esse comportamento não deve ser interpretado como escalabilidade teórica perfeita. Ele mostra que a versão anterior possuía overheads artificiais importantes, principalmente carregamento integral do CSV em memória e serialização de dados para os workers. Ao remover esses gargalos, o benchmark passou a medir de forma mais direta o custo do processamento paralelo por fatias do arquivo.
 
 ### Lei de Amdahl
 
@@ -374,11 +402,13 @@ Onde:
 - `S` é a fração sequencial do programa;
 - `P` é o número de processos.
 
-Mesmo quando grande parte do processamento é paralelizável, etapas como leitura, divisão de intervalos, criação dos processos, combinação das parciais, cálculo dos percentis e gravação dos resultados limitam o ganho máximo.
+Mesmo quando grande parte do processamento é paralelizável, etapas como abertura do arquivo, criação dos processos, coordenação dos workers, redução dos resultados parciais e disputa por recursos compartilhados limitam o ganho máximo.
 
 ### Observação sobre escalabilidade
 
-O resultado com **8 processos** foi ligeiramente pior que com **4 processos**, o que pode ocorrer em benchmarks reais. Mais processos podem aumentar a concorrência por disco, cache e memória, além de gerar overhead de gerenciamento. Por isso, o desempenho paralelo nem sempre cresce proporcionalmente ao número de processos.
+O resultado mostra melhora significativa até 8 processos e ganho adicional menor de 8 para 12 processos. Isso indica que a implementação paralela escalou bem, mas começou a se aproximar de uma região de saturação do ambiente de execução.
+
+Essa saturação é esperada em aplicações que processam arquivos CSV grandes, pois os processos competem por leitura de disco, memória, cache e tempo de CPU. Portanto, o desempenho não cresce indefinidamente com o número de processos.
 
 ---
 
@@ -388,20 +418,22 @@ Além dos gráficos principais de desempenho apresentados na seção de speedup,
 
 ### Distribuição das corridas
 
-![Distribuição das corridas](grafico_distribuicao.png)
+![Distribuição das corridas](graficos_benchmark/grafico_distribuicao.png)
 
 ### Estatísticas das distâncias
 
-![Estatísticas das distâncias](grafico_estatisticas.png)
+![Estatísticas das distâncias](graficos_benchmark/grafico_estatisticas.png)
 
 ---
 
 ## 13. Conclusão
 
-A implementação paralela produziu os mesmos resultados estatísticos da execução sequencial, confirmando que a divisão do trabalho entre processos preservou a correção dos cálculos.
+A implementação paralela produziu os mesmos resultados principais da execução completa, confirmando que a divisão do trabalho entre processos preservou a correção dos cálculos agregáveis.
 
-Em desempenho, o benchmark mostrou melhora clara em relação à execução com 1 processo. O tempo médio caiu de **282,07 s** para **103,35 s**, usando **12 processos**. Isso representa speedup de **2,73×** e redução de aproximadamente **63,36%** no tempo de execução.
+Em desempenho, o benchmark otimizado mostrou melhora expressiva em relação à execução com 1 processo. O tempo médio caiu de **25,81 s** para **3,03 s**, usando **12 processos**. Isso representa speedup de **8,52×** e redução de aproximadamente **88,27%** no tempo de execução.
 
-O resultado também mostra que paralelismo não escala de forma perfeitamente linear. A configuração com 8 processos foi pior que a de 4 processos, e a eficiência diminuiu conforme mais processos foram adicionados. Isso indica que o projeto está sujeito a gargalos reais, principalmente I/O de disco, overhead de multiprocessamento e etapas sequenciais de redução.
+O resultado também mostra que o paralelismo não cresce indefinidamente. O ganho de 8 para 12 processos foi pequeno em comparação com os ganhos iniciais, indicando saturação por recursos compartilhados, como disco, memória, cache e coordenação dos processos.
 
-Assim, o projeto demonstra tanto a vantagem prática do processamento paralelo quanto suas limitações, oferecendo uma análise coerente de speedup, eficiência e saturação de desempenho.
+Além disso, o benchmark otimizado removeu gargalos artificiais presentes na abordagem anterior, como carregamento do CSV inteiro em memória e envio de milhões de linhas para os workers. Com isso, os resultados passaram a representar de forma mais prática o desempenho do processamento paralelo por fatias do arquivo.
+
+Assim, o projeto demonstra tanto a vantagem prática do processamento paralelo quanto suas limitações reais, oferecendo uma análise coerente de speedup, eficiência, saturação e impacto da estratégia de implementação.
