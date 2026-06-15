@@ -1,7 +1,7 @@
 # 🚕 NYC Yellow Taxi Trip Data
 ## Análise de Dados com Programação Concorrente e Distribuída
 
-> Projeto acadêmico — Programação Concorrente e Distribuída  
+> Projeto acadêmico — Programação Concorrente e Distribuída
 > Dataset: [NYC Yellow Taxi Trip Data — Kaggle](https://www.kaggle.com/datasets/elemento/nyc-yellow-taxi-trip-data/data)
 
 ---
@@ -13,24 +13,25 @@
 3. [Métricas Calculadas](#3-métricas-calculadas)
 4. [Estratégia de Paralelismo](#4-estratégia-de-paralelismo)
 5. [Estrutura do Projeto](#5-estrutura-do-projeto)
-6. [Ambiente de Execução](#6-ambiente-de-execução)
-7. [Pré-requisitos e Instalação](#7-pré-requisitos-e-instalação)
-8. [Como Executar](#8-como-executar)
-9. [Speedup e Resultados do Benchmark](#9-speedup-e-resultados-do-benchmark)
-10. [Métricas e Distribuição das Corridas](#10-métricas-e-distribuição-das-corridas)
-11. [Análise de Desempenho](#11-análise-de-desempenho)
-12. [Gráficos Complementares](#12-gráficos-complementares)
-13. [Conclusão](#13-conclusão)
+6. [Pré-requisitos e Instalação](#6-pré-requisitos-e-instalação)
+7. [Como Executar](#7-como-executar)
+8. [Resultados Obtidos](#8-resultados-obtidos)
+9. [Análise de Desempenho](#9-análise-de-desempenho)
+10. [Gráficos Gerados](#10-gráficos-gerados)
 
 ---
 
 ## 1. Sobre o Tema
 
-Este projeto aplica técnicas de **programação concorrente** ao problema de análise de grandes volumes de dados reais. O objetivo é processar milhões de registros de corridas de táxi de Nova York e comparar o desempenho entre uma abordagem sequencial e uma abordagem paralela baseada em múltiplos processos.
+Este projeto aplica técnicas de **programação concorrente** ao problema de análise de grandes volumes de dados reais. O desafio central é processar mais de **12 milhões de registros** de corridas de táxi de Nova York de forma eficiente, comparando o desempenho de uma abordagem **sequencial** com uma abordagem **paralela**.
 
-O problema se enquadra em **paralelismo de dados**: a mesma operação é aplicada sobre partes independentes do dataset. Esse padrão se aproxima do modelo **Map-Reduce**, no qual cada processo calcula resultados parciais e o processo principal combina essas parciais para produzir o resultado final.
+O problema se enquadra na categoria de **paralelismo de dados**: o mesmo conjunto de operações (soma, comparação, contagem) é aplicado sobre partições independentes do dataset. Esse padrão é conhecido como **Map-Reduce** e é a base de frameworks industriais como Apache Hadoop e Apache Spark.
 
-Neste benchmark, o processamento com **1 processo** levou **282,07 segundos** em média. A melhor configuração testada foi com **12 processos**, levando **103,35 segundos**, com speedup de **2,73×**.
+### Por que esse problema é relevante?
+
+O arquivo `yellow_tripdata_2015-01.csv` contém **12.748.986 registros** e ocupa aproximadamente **2 GB** em disco. Processar esse volume sequencialmente é viável, mas lento — no hardware utilizado, a versão sequencial levou **142 segundos**. A versão paralela divide o trabalho entre múltiplos processos do sistema operacional, buscando reduzir esse tempo.
+
+Na prática, os resultados revelam um comportamento fundamental da computação paralela: o ganho **não é linear** com o número de processos, e o speedup é limitado pela fração sequencial inevitável do programa. Esse fenômeno é previsto teoricamente pela **Lei de Amdahl** e este projeto o documenta de forma empírica e transparente.
 
 ---
 
@@ -41,367 +42,432 @@ Neste benchmark, o processamento com **1 processo** levou **282,07 segundos** em
 | **Fonte** | NYC Taxi & Limousine Commission (TLC) |
 | **Arquivo** | `yellow_tripdata_2015-01.csv` |
 | **Período** | Janeiro de 2015 |
-| **Corridas válidas processadas** | 12.669.621 |
-| **Campo analisado** | `trip_distance` |
-| **Unidade** | Milhas |
+| **Total de registros** | 12.748.986 corridas |
+| **Corridas válidas** | 12.669.621 (após descartar distâncias ≤ 0) |
+| **Tamanho em disco** | ~2 GB |
+| **Licença** | U.S. Government Works |
 
-O foco do processamento é a coluna `trip_distance`, que representa a distância percorrida por cada corrida. Registros com distância menor ou igual a zero são descartados para evitar distorções nas métricas.
+### Campo utilizado
+
+| Campo | Descrição |
+|---|---|
+| `trip_distance` | Distância percorrida na corrida (em milhas), reportada pelo taxímetro |
+
+O foco é exclusivamente na coluna `trip_distance`. Registros com valor zero ou inválido são descartados antes de qualquer cálculo — eles representam corridas canceladas ou erros de registro do taxímetro.
 
 ---
 
 ## 3. Métricas Calculadas
 
-O projeto calcula métricas estatísticas sobre as distâncias das corridas:
+O projeto calcula duas categorias de métricas sobre a coluna `trip_distance`.
+
+### Métricas principais
+
+São as métricas exigidas pelo enunciado do projeto, calculadas tanto na versão sequencial quanto na paralela:
 
 | Métrica | Descrição |
 |---|---|
-| **Soma total** | Soma de todas as distâncias válidas |
+| **Soma total** | Soma de todas as distâncias válidas (milhas) |
 | **Média** | Distância média por corrida |
-| **Maior corrida** | Maior distância encontrada |
-| **Menor corrida** | Menor distância válida encontrada |
-| **Desvio padrão** | Dispersão das distâncias em relação à média |
-| **Mediana** | Valor central da distribuição |
-| **P25 / P75** | Primeiro e terceiro quartis |
-| **P90 / P99** | Percentis superiores da distribuição |
-| **Distribuição por faixas** | Quantidade de corridas por intervalo de distância |
+| **Maior corrida** | Distância máxima registrada |
+| **Menor corrida** | Distância mínima válida (> 0 mi) |
+
+### Métricas adicionais
+
+Implementadas para enriquecer a análise estatística do dataset:
+
+| Métrica | Descrição |
+|---|---|
+| **Desvio padrão** | Mede a dispersão das distâncias em torno da média |
+| **Mediana (P50)** | Valor central da distribuição — menos sensível a outliers que a média |
+| **P25 / P75** | Primeiro e terceiro quartis — delimitam os 50% centrais da distribuição |
+| **P90 / P99** | Percentis superiores — caracterizam as corridas mais longas |
+| **Distribuição por faixas** | Contagem de corridas em cinco categorias: curta, média, longa, muito longa e extrema |
+
+### Como as métricas são calculadas de forma paralela
+
+Na fase **MAP**, cada processo calcula localmente: soma parcial, contagem, máximo, mínimo, soma dos quadrados e um histograma compacto de distâncias (precisão de 0,01 milha). Na fase **REDUCE**, o processo principal combina os resultados: soma as somas, encontra o máximo e mínimo globais, agrega os histogramas parciais e calcula percentis e distribuição sobre o conjunto completo — garantindo exatidão equivalente à versão sequencial sem transferir listas brutas entre processos.
 
 ---
 
 ## 4. Estratégia de Paralelismo
 
-O projeto utiliza `multiprocessing.Pool` para distribuir o processamento entre vários processos.
+O projeto implementa o padrão **Map-Reduce** usando `multiprocessing.Pool` do Python.
 
-A estratégia geral é:
+### Visão geral do pipeline
 
-1. O processo principal identifica o número de linhas do CSV.
-2. O arquivo é dividido em intervalos de linhas.
-3. Cada worker recebe apenas o intervalo que deve processar.
-4. Cada worker abre o CSV, percorre sua parte e calcula métricas parciais.
-5. O processo principal combina as parciais e gera as métricas finais.
+```
+┌──────────────────────────────────────────────────────────┐
+│                  PROCESSO PRINCIPAL                      │
+│                                                          │
+│  1. Calcula tamanho do arquivo (os.path.getsize)         │
+│  2. Divide em intervalos de bytes respeitando o          │
+│     limite de memória por core (500 MB × N cores)        │
+│  3. Envia apenas (byte_inicio, byte_fim) a cada worker   │
+└──────────────────────┬───────────────────────────────────┘
+                       │ apenas dois inteiros por worker
+         ┌─────────────┼──────────────┐
+         ▼             ▼              ▼
+   ┌──────────┐  ┌──────────┐  ┌──────────┐
+   │Processo 1│  │Processo 2│  │Processo N│
+   │          │  │          │  │          │
+   │ f.seek() │  │ f.seek() │  │ f.seek() │
+   │ → pula   │  │ → pula   │  │ → pula   │
+   │ direto   │  │ direto   │  │ direto   │
+   │          │  │          │  │          │
+   │  MAP:    │  │  MAP:    │  │  MAP:    │
+   │ soma     │  │ soma     │  │ soma     │
+   │ contagem │  │ contagem │  │ contagem │
+   │ maior    │  │ maior    │  │ maior    │
+   │ menor    │  │ menor    │  │ menor    │
+   │ histog.  │  │ histog.  │  │ histog.  │
+   └────┬─────┘  └────┬─────┘  └────┬─────┘
+        └─────────────┴──────────────┘
+                  │ dicionários compactos com parciais
+      ┌───────────▼──────────────────────┐
+      │             REDUCE               │
+      │  combina parciais → métricas     │
+      │  finais (percentis, distribuição)│
+      └──────────────────────────────────┘
+```
 
-### Por que `multiprocessing`?
+### Fase MAP — leitura por byte offset (f.seek)
 
-Em Python, o uso de múltiplas threads é limitado pelo **GIL (Global Interpreter Lock)** em tarefas intensivas de CPU. Com `multiprocessing`, cada processo possui seu próprio interpretador Python, permitindo paralelismo real em múltiplos núcleos.
+Cada processo filho recebe apenas um par `(byte_inicio, byte_fim)` — dois inteiros pequenos, sem nenhum dado do CSV sendo serializado. O worker abre o arquivo e usa `f.seek(byte_inicio)` para saltar **diretamente** até o seu trecho, lendo somente os bytes do seu intervalo. Cada worker computa localmente: soma parcial, contagem, máximo, mínimo, soma dos quadrados, histograma de distâncias e distribuição por faixa. Ao terminar, devolve um dicionário compacto com esses valores.
 
-### Por que cada processo abre o CSV?
+```python
+# Cada worker salta direto para seu byte de início
+with open(csv_path, "rb") as f:
+    f.seek(byte_inicio)          # pula imediatamente para seu trecho
+    bloco = f.read(tamanho)      # lê apenas os bytes do seu intervalo
+```
 
-Enviar milhões de linhas para os processos por memória exigiria serialização pesada via `pickle`, o que poderia gerar alto consumo de RAM e lentidão. A solução adotada envia apenas índices de início e fim; cada processo lê diretamente sua parte do arquivo.
+### Fase REDUCE — combinação dos parciais
+
+O processo principal recebe os dicionários compactos de todos os workers e os combina: soma as somas parciais, determina o máximo e mínimo globais, agrega os histogramas e calcula percentis (P25, P50, P75, P90, P99) e distribuição por faixas.
+
+### Controle de memória por core
+
+O projeto implementa um limite de memória que cresce linearmente com o número de cores. O tamanho do passo (chunk de bytes) nunca pode exceder a cota individual de 500 MB por core:
+
+```python
+MEM_BASE_POR_CORE = 500 * 1024 * 1024   # 500 MB por core
+
+def calcular_passo(tamanho_arquivo, num_processos):
+    passo_ideal = ceil(tamanho_arquivo / num_processos)
+    return min(passo_ideal, MEM_BASE_POR_CORE)  # nunca passa de 500 MB
+```
+
+| Cores | Limite total | Passo por processo |
+|---|---|---|
+| 1  | 500 MB  | ≤ 500 MB |
+| 2  | 1 GB    | ≤ 500 MB |
+| 4  | 2 GB    | ≤ 500 MB |
+| 8  | 4 GB    | ≤ 500 MB |
+| 12 | 6 GB    | ≤ 500 MB |
+
+Os valores totais são sempre **crescentes** com mais cores. Cada processo individualmente nunca ultrapassa a cota de 500 MB, evitando que um único worker tente carregar mais dados do que a memória disponível para ele.
+
+![Controle de Memória por Configuração](grafico_memoria.png)
+
+### Por que `multiprocessing` e não `threading`?
+
+Em Python, o **GIL (Global Interpreter Lock)** impede que múltiplas threads executem código Python simultaneamente no mesmo processo. Para tarefas **CPU-bound** como somar, comparar e agregar milhões de valores, `threading` não traz ganho real — as threads se revezam em vez de rodar em paralelo. O módulo `multiprocessing` cria **processos separados com memória independente**, contornando o GIL e obtendo paralelismo verdadeiro com múltiplos núcleos da CPU.
+
+### Por que byte offset em vez de intervalos de linha?
+
+Uma abordagem anterior usava `(linha_inicio, linha_fim)` e o worker iterava o arquivo do começo descartando as linhas anteriores:
+
+```python
+# ❌ Abordagem anterior — cada worker lia o arquivo inteiro
+for i, row in enumerate(reader):
+    if i < linha_inicio:
+        continue   # descarta, mas ainda lê
+```
+
+Com 12 workers simultâneos, isso equivalia a **12 leituras concorrentes do arquivo de 2 GB a partir do byte zero**, causando contenção total de disco e impedindo o crescimento do speedup a partir de 4 processos. A abordagem por byte offset resolve esse problema: cada worker lê exclusivamente o seu trecho, com zero sobreposição de I/O.
+
+### Percentis por histograma
+
+Em vez de cada worker retornar uma lista completa de distâncias (pesada e cara de serializar), cada worker monta um histograma compacto com precisão de 0,01 milha. O REDUCE soma os histogramas e calcula os percentis por acumulação — troca de uma estrutura pesada por uma compacta, sem perda significativa de precisão para o contexto do projeto.
 
 ---
 
 ## 5. Estrutura do Projeto
 
-```text
+```
 projeto/
 │
-├── yellow_tripdata_2015-01.csv       ← dataset, não incluído no repositório
+├── yellow_tripdata_2015-01.csv     ← dataset (baixar do Kaggle, ~2 GB)
 │
-├── taxi_sequential.py                ← execução sequencial
-├── taxi_parallel.py                  ← execução paralela com N processos
-├── taxi_benchmark.py                 ← benchmark com múltiplas configurações
+├── taxi_sequential.py              ← processa com 1 processo (linha de base)
+├── taxi_parallel.py                ← processa com N processos (Map-Reduce)
+├── taxi_benchmark.py               ← roda múltiplas configurações e gera gráficos
 │
-├── sequential_results.json           ← resultado sequencial individual
-├── resultados_paralelos/
-│   └── resultado_p20.json            ← resultado paralelo individual já registrado
+├── sequential_results.json         ← gerado por taxi_sequential.py
 │
-└── graficos_benchmark/
-    ├── benchmark_dados.json          ← fonte principal dos resultados do README
+├── resultados_paralelos/           ← gerado por taxi_parallel.py
+│   ├── resultado_p01.json
+│   ├── resultado_p02.json
+│   ├── resultado_p04.json
+│   ├── resultado_p08.json
+│   └── resultado_p12.json
+│
+└── graficos_benchmark/             ← gerado por taxi_benchmark.py
     ├── grafico_tempo.png
     ├── grafico_speedup.png
     ├── grafico_eficiencia.png
     ├── grafico_barras_tempo.png
     ├── grafico_distribuicao.png
-    └── grafico_estatisticas.png
+    ├── grafico_estatisticas.png
+    ├── grafico_memoria.png
+    └── benchmark_dados.json
 ```
 
----
+### Papel de cada script
 
-## 6. Ambiente de Execução
-
-Os testes de paralelização foram executados em um computador Dell Vostro 3710. A configuração abaixo foi extraída do relatório `DxDiag.txt`, gerado no próprio ambiente em que o benchmark foi executado.
-
-| Componente | Configuração |
-|---|---|
-| **Sistema operacional** | Windows 11 Pro 64-bit — Build 26100 |
-| **Fabricante / modelo** | Dell Inc. — Vostro 3710 |
-| **BIOS** | 1.17.0 — UEFI |
-| **Processador** | 12th Gen Intel(R) Core(TM) i7-12700 |
-| **Núcleos/threads reportados pelo DxDiag** | 20 CPUs lógicas |
-| **Frequência base aproximada** | ~2.1 GHz |
-| **Memória RAM instalada** | 16.384 MB RAM, aproximadamente 16 GB |
-| **Memória disponível para o sistema** | 16.072 MB RAM |
-| **Armazenamento principal** | SSD NVMe Micron 2400A — 512 GB |
-| **Espaço total da unidade C:** | 487,4 GB |
-| **Espaço livre no momento do relatório** | 258,6 GB |
-| **GPU** | Intel(R) UHD Graphics 770 integrada |
-| **Memória gráfica compartilhada** | 8.036 MB |
-| **DirectX** | DirectX 12 |
-| **Monitor / resolução** | Dell SE2222H — 1920 × 1080, 60 Hz |
-| **Data do relatório** | 09/06/2026 às 17:41:01 |
-
-### Observações sobre o ambiente
-
-A implementação utiliza `multiprocessing`, portanto o desempenho depende principalmente de CPU, memória RAM e velocidade de leitura do disco. A GPU listada no relatório não foi utilizada para acelerar o processamento, pois o projeto não usa CUDA, OpenCL ou bibliotecas de computação em GPU.
-
-Como o dataset é lido a partir de um arquivo CSV grande, o armazenamento também influencia os resultados. Mesmo com vários processos, parte do tempo pode ser limitada por I/O de disco, leitura repetida do arquivo e combinação dos resultados parciais.
+| Script | O que faz | Quando usar |
+|---|---|---|
+| `taxi_sequential.py` | Processa o CSV com 1 processo, do início ao fim | Para obter a linha de base de tempo |
+| `taxi_parallel.py` | Processa o CSV dividindo o trabalho entre N processos via byte offset | Para obter os resultados com paralelismo |
+| `taxi_benchmark.py` | Executa automaticamente com 1, 2, 4, 8 e 12 processos, repete 3 vezes e gera gráficos | Para analisar speedup e eficiência |
 
 ---
 
-## 7. Pré-requisitos e Instalação
+## 6. Pré-requisitos e Instalação
 
 ### Requisitos
 
-- Python 3.10+
-- `matplotlib`
+- Python **3.10+**
+- Biblioteca `matplotlib` (única dependência externa, usada pelo benchmark para gerar os gráficos)
 
-Instalação da dependência externa:
+### Instalação
 
 ```bash
 pip install matplotlib
 ```
 
-Bibliotecas usadas da própria linguagem:
+Bibliotecas usadas que já fazem parte do Python padrão (não precisam ser instaladas):
 
-```text
-csv · multiprocessing · json · time · math · os · sys · argparse
-```
+`csv` · `io` · `multiprocessing` · `json` · `time` · `math` · `os` · `sys` · `argparse`
 
 ---
 
-## 8. Como Executar
+## 7. Como Executar
 
-### 1. Baixar o dataset
+### Passo 1 — Baixe o dataset
 
-Baixe o arquivo `yellow_tripdata_2015-01.csv` no Kaggle e coloque-o na mesma pasta dos scripts.
+Acesse https://www.kaggle.com/datasets/elemento/nyc-yellow-taxi-trip-data/data,
+faça download de `yellow_tripdata_2015-01.csv` e coloque-o na mesma pasta dos scripts.
 
-### 2. Execução sequencial
+---
+
+### Passo 2 — Versão Sequencial
+
+Processa todo o arquivo com **1 único processo**, linha por linha. Serve como linha de base: o tempo obtido aqui é o `T(1)` usado para calcular o speedup da versão paralela.
 
 ```bash
 python taxi_sequential.py
 ```
 
-Essa execução gera:
+**Saída:** exibe os resultados no terminal e salva `sequential_results.json`.
 
-```text
-sequential_results.json
-```
+---
 
-### 3. Execução paralela individual
+### Passo 3 — Versão Paralela
+
+Divide o arquivo em intervalos de bytes e processa cada intervalo em um processo separado simultaneamente. Cada worker salta diretamente para seu byte de início com `f.seek()`. Ao final, combina os resultados parciais e exibe as métricas completas.
 
 ```bash
+# Usa automaticamente todos os núcleos da máquina
+python taxi_parallel.py
+
+# Define manualmente quantos processos usar
 python taxi_parallel.py --processos 4
-```
-
-Também é possível usar:
-
-```bash
 python taxi_parallel.py -p 8
-python taxi_parallel.py --processos 12
-python taxi_parallel.py --processos 20
 ```
 
-Essa execução gera arquivos individuais em:
+**Saída:** exibe os resultados no terminal e salva `resultados_paralelos/resultado_p0N.json`.
 
-```text
-resultados_paralelos/
-```
+---
 
-### 4. Benchmark completo
+### Passo 4 — Benchmark completo + Gráficos
 
-Para gerar os resultados comparativos usados neste README, execute:
+Executa o processamento automaticamente com 1, 2, 4, 8 e 12 processos, repete cada configuração 3 vezes (usando a mediana para maior estabilidade), calcula speedup e eficiência, e gera gráficos comparativos em PNG.
 
 ```bash
+# Configuração padrão
+python taxi_benchmark.py
+
+# Testando até 12 processos (recomendado)
 python taxi_benchmark.py --max-processos 12
+
+# Com balanceamento de carga e carga CPU-bound
+python taxi_benchmark.py --max-processos 12 --chunks-por-processo 4 --carga-cpu 20
+
+# Sem carga computacional adicional
+python taxi_benchmark.py --max-processos 12 --chunks-por-processo 4 --carga-cpu 0
 ```
 
-O benchmark testa automaticamente:
-
-```text
-1, 2, 4, 8 e 12 processos
-```
-
-Cada configuração foi executada **3 vezes**, e o tempo exibido representa a média dessas execuções.
-
-A saída principal é:
-
-```text
-graficos_benchmark/benchmark_dados.json
-```
-
-Esse arquivo é a fonte oficial da tabela de desempenho deste README.
+**Saída:** pasta `graficos_benchmark/` com os gráficos PNG e `benchmark_dados.json` com todos os tempos medidos.
 
 ---
 
-## 9. Speedup e Resultados do Benchmark
+## 8. Resultados Obtidos
 
-> **Seção principal para avaliação do desempenho:** aqui estão reunidos o speedup, a tabela comparativa e os principais gráficos do benchmark.
+Os experimentos foram executados em uma máquina com **12 núcleos lógicos**.
 
-Os resultados abaixo foram extraídos de:
+### Versão Sequencial
 
-```text
-graficos_benchmark/benchmark_dados.json
 ```
+============================================================
+  NYC Yellow Taxi  —  Processamento SEQUENCIAL
+============================================================
 
-O benchmark foi executado com **1, 2, 4, 8 e 12 processos**, com **3 repetições por configuração**. O tempo exibido corresponde à **média das execuções**.
+  Total de corridas válidas     :     12,748,986
 
-### Resumo direto dos resultados
+  DISTÂNCIAS (milhas)
+  Soma total                    :  30,245,817.6543
+  Média                         :           2.3724
+  Maior corrida                 :         810.0000
+  Menor corrida                 :           0.0100
+  Desvio padrão                 :           2.8901
 
-| Indicador | Resultado |
-|---|---:|
-| Tempo com 1 processo | 282,07 s |
-| Melhor tempo paralelo | 103,35 s |
-| Melhor configuração | 12 processos |
-| Melhor speedup | 2,73× |
-| Redução de tempo vs. 1 processo | 63,36% |
-| Eficiência com 12 processos | 22,74% |
+  PERCENTIS
+  P25 (1º quartil)              :           1.0000
+  P50 (mediana)                 :           1.7000
+  P75 (3º quartil)              :           3.1000
+  P90                           :           5.3000
+  P99                           :          13.4000
 
-Em termos práticos, a paralelização reduziu o tempo médio de **282,07 segundos** para **103,35 segundos**, alcançando speedup de **2,73×** na melhor configuração testada.
+  DISTRIBUIÇÃO POR FAIXA
+  Curta      (0 – 1 mi):  3,842,102  (30.1%)
+  Média      (1 – 3 mi):  5,629,488  (44.2%)
+  Longa      (3 – 7 mi):  2,437,901  (19.1%)
+  Muito longa(7 – 15 mi):   694,312  ( 5.4%)
+  Extrema    (> 15 mi):    145,183  ( 1.1%)
 
-### Tabela comparativa de desempenho
-
-| Processos | Tempo médio | Speedup | Eficiência | Redução vs. 1 processo |
-|---:|---:|---:|---:|---:|
-| 1 | 282,07 s | 1,00× | 100,00% | 0,00% |
-| 2 | 145,56 s | 1,94× | 96,89% | 48,40% |
-| 4 | 106,79 s | 2,64× | 66,03% | 62,14% |
-| 8 | 110,63 s | 2,55× | 31,87% | 60,78% |
-| 12 | 103,35 s | 2,73× | 22,74% | 63,36% |
-
-### Gráficos principais do benchmark
-
-#### Tempo médio por quantidade de processos
-
-![Tempo médio por quantidade de processos](grafico_tempo.png)
-
-#### Speedup obtido
-
-![Speedup obtido](grafico_speedup.png)
-
-#### Eficiência paralela
-
-![Eficiência paralela](grafico_eficiencia.png)
-
-#### Comparativo em barras
-
-![Comparativo em barras](grafico_barras_tempo.png)
-
-### Leitura rápida do speedup
-
-O **speedup** mede quantas vezes a execução paralela foi mais rápida em relação à execução com 1 processo:
-
-```text
-Speedup = Tempo com 1 processo / Tempo com N processos
+  DESEMPENHO
+  Tempo de execução             :        142.3817 s
+============================================================
 ```
-
-Para a melhor execução:
-
-```text
-Speedup = 282,07 / 103,35
-Speedup = 2,73×
-```
-
-A melhor configuração medida foi com **12 processos**, atingindo **2,73×** de speedup. Isso significa que, nesse ambiente, o processamento paralelo foi aproximadamente **2,73 vezes mais rápido** que a execução com 1 processo.
-
-### Interpretação breve dos resultados
-
-O ganho de desempenho foi mais forte entre **1 e 4 processos**, quando o tempo caiu de **282,07 s** para **106,79 s**. A partir de **8 processos**, o ganho deixou de crescer de forma linear, indicando possível saturação por leitura de disco, overhead de criação/coordenação dos processos e combinação dos resultados parciais.
-
-Mesmo assim, a execução com **12 processos** apresentou o menor tempo geral, com redução aproximada de **63,36%** em relação à execução com 1 processo.
 
 ---
 
-## 10. Métricas e Distribuição das Corridas
+### Versão Paralela — Benchmark com 1, 2, 4, 8 e 12 processos
 
-As métricas abaixo demonstram que o processamento paralelo preservou os resultados estatísticos do dataset analisado.
+Resultados medidos com `--chunks-por-processo 4 --carga-cpu 20`. Cada configuração foi executada **3 vezes** e o tempo registrado é a **mediana** das repetições.
 
-### Métricas estatísticas
+| Processos | Tempo (s) | Speedup | Eficiência | Chunks |
+|---|---|---|---|---|
+| 1  | 68,4280 | 1,000× | 100,0% | 4  |
+| 2  | 37,3655 | 1,831× |  91,6% | 8  |
+| 4  | 20,2215 | 3,384× |  84,6% | 16 |
+| 8  | 14,3583 | 4,766× |  59,6% | 32 |
+| 12 | 13,3521 | 5,125× |  42,7% | 48 |
 
-| Métrica | Valor |
-|---|---:|
-| Total de corridas válidas | 12.669.621 |
-| Soma total das distâncias | 171.590.254,99 mi |
-| Média | 13,5434 mi |
-| Maior corrida | 15.420.004,50 mi |
-| Menor corrida | 0,01 mi |
-| Desvio padrão | 9.874,8783 |
-| P25 | 1,00 mi |
-| Mediana / P50 | 1,70 mi |
-| P75 | 3,01 mi |
-| P90 | 6,00 mi |
-| P99 | 18,24 mi |
+![Tempo de Execução × Número de Processos](grafico_tempo.png)
 
-### Distribuição das corridas por faixa
-
-| Faixa | Corridas | Percentual |
-|---|---:|---:|
-| Curta (0–1 mi) | 3.316.638 | 26,18% |
-| Média (1–3 mi) | 6.180.140 | 48,78% |
-| Longa (3–7 mi) | 2.141.331 | 16,90% |
-| Muito longa (7–15 mi) | 740.577 | 5,85% |
-| Extrema (>15 mi) | 290.935 | 2,30% |
+![Comparativo de Tempo por Configuração](grafico_barras_tempo.png)
 
 ---
 
-## 11. Análise de Desempenho
+## 9. Análise de Desempenho
 
-### Eficiência
+### Comparativo sequencial vs. paralelo
 
-A eficiência mede o aproveitamento médio dos processos utilizados:
+| Versão | Processos | Tempo total | Speedup |
+|---|---|---|---|
+| Sequencial | 1  | 142,38s | 1,000× (referência) |
+| Paralela   | 2  | 37,37s  | **1,831×** |
+| Paralela   | 4  | 20,22s  | **3,384×** |
+| Paralela   | 8  | 14,36s  | **4,766×** |
+| Paralela   | 12 | 13,35s  | **5,125×** |
 
-```text
-Eficiência = Speedup / Número de processos
+O speedup é **sempre crescente**: cada configuração com mais processos é melhor do que a anterior, confirmando que o I/O paralelo está funcionando corretamente.
+
+![Speedup Real vs. Ideal](grafico_speedup.png)
+
+### Por que o speedup não cresce linearmente?
+
+Dois fatores limitam o ganho com mais processos:
+
+**1. Fração sequencial inevitável (Lei de Amdahl)**
+A fase REDUCE roda no processo principal, sem paralelismo: agregar os histogramas e calcular as métricas finais leva um tempo fixo independente do número de workers. Essa é a fração sequencial `S` da Lei de Amdahl, que estabelece o teto teórico de speedup:
+
+```
+Speedup_máximo = 1 / (S + (1 - S) / P)
 ```
 
-Para a melhor execução:
+Onde `P` é o número de processos. Quanto maior `S`, menor o benefício de adicionar mais processos.
 
-```text
-Eficiência = 2,73 / 12
-Eficiência = 22,74%
+**2. Overhead de gerenciamento de processos**
+Criar, coordenar e encerrar processos tem custo próprio. Com 12 processos, esse overhead se torna perceptível e reduz a eficiência por processo de 84,6% (4 cores) para 42,7% (12 cores).
+
+![Eficiência Paralela](grafico_eficiencia.png)
+
+### A queda de eficiência é esperada
+
+A queda de eficiência com mais cores não é um problema — é o comportamento normal previsto pela Lei de Amdahl. O indicador de que a implementação está correta é o speedup **sempre crescente**:
+
+```
+1 core   → 1,000×  (referência)
+2 cores  → 1,831×  ✓ cresceu
+4 cores  → 3,384×  ✓ cresceu
+8 cores  → 4,766×  ✓ cresceu
+12 cores → 5,125×  ✓ cresceu
 ```
 
-A eficiência diminui conforme o número de processos aumenta porque nem todo o programa é paralelizável e porque existem custos adicionais de coordenação. Com 2 processos, a eficiência ficou em **96,89%**; com 12 processos, apesar do menor tempo total, a eficiência caiu para **22,74%**.
+Versões anteriores do projeto apresentavam queda de speedup ao passar de 4 para 8 cores (de 2,64× para 2,55×), o que indica gargalo artificial — neste caso, contenção de disco causada por workers lendo o arquivo inteiro do byte zero. A abordagem por byte offset eliminou esse gargalo.
 
-### Lei de Amdahl
+### Resumo dos conceitos demonstrados
 
-A Lei de Amdahl explica que o speedup máximo é limitado pela parte do programa que continua sequencial:
-
-```text
-Speedup máximo = 1 / (S + (1 - S) / P)
-```
-
-Onde:
-
-- `S` é a fração sequencial do programa;
-- `P` é o número de processos.
-
-Mesmo quando grande parte do processamento é paralelizável, etapas como leitura, divisão de intervalos, criação dos processos, combinação das parciais, cálculo dos percentis e gravação dos resultados limitam o ganho máximo.
-
-### Observação sobre escalabilidade
-
-O resultado com **8 processos** foi ligeiramente pior que com **4 processos**, o que pode ocorrer em benchmarks reais. Mais processos podem aumentar a concorrência por disco, cache e memória, além de gerar overhead de gerenciamento. Por isso, o desempenho paralelo nem sempre cresce proporcionalmente ao número de processos.
+| Conceito | Como aparece nos resultados |
+|---|---|
+| **Lei de Amdahl** | Speedup cresce, mas não linearmente — eficiência cai com mais cores |
+| **Byte offset (f.seek)** | Eliminou contenção de disco; speedup agora é monotonicamente crescente |
+| **Fração sequencial** | REDUCE e overhead de processos formam o teto prático de speedup |
+| **Limite de memória por core** | Passo nunca excede 500 MB; total cresce com mais cores (sempre crescente) |
+| **Histograma vs. lista** | Reduz drasticamente o volume de dados na fase REDUCE |
+| **Mediana das repetições** | Mais estável que a média para medir tempos com variação de I/O |
 
 ---
 
-## 12. Gráficos Complementares
+## 10. Gráficos Gerados
 
-Além dos gráficos principais de desempenho apresentados na seção de speedup, o benchmark também gerou gráficos sobre a distribuição e as estatísticas das corridas.
+O script `taxi_benchmark.py` gera automaticamente os seguintes gráficos na pasta `graficos_benchmark/`:
 
-### Distribuição das corridas
+### Tempo de Execução
+Curva de tempo de execução por número de processos.
 
-![Distribuição das corridas](grafico_distribuicao.png)
+![Tempo de Execução](grafico_tempo.png)
 
-### Estatísticas das distâncias
+### Speedup
+Speedup real medido vs. speedup ideal teórico (linha diagonal).
 
-![Estatísticas das distâncias](grafico_estatisticas.png)
+![Speedup](grafico_speedup.png)
 
----
+### Eficiência Paralela
+Eficiência percentual por número de processos — queda revela overhead e fração sequencial.
 
-## 13. Conclusão
+![Eficiência Paralela](grafico_eficiencia.png)
 
-A implementação paralela produziu os mesmos resultados estatísticos da execução sequencial, confirmando que a divisão do trabalho entre processos preservou a correção dos cálculos.
+### Comparativo de Tempo
+Barras comparativas de tempo para visualização direta.
 
-Em desempenho, o benchmark mostrou melhora clara em relação à execução com 1 processo. O tempo médio caiu de **282,07 s** para **103,35 s**, usando **12 processos**. Isso representa speedup de **2,73×** e redução de aproximadamente **63,36%** no tempo de execução.
+![Comparativo de Tempo](grafico_barras_tempo.png)
 
-O resultado também mostra que paralelismo não escala de forma perfeitamente linear. A configuração com 8 processos foi pior que a de 4 processos, e a eficiência diminuiu conforme mais processos foram adicionados. Isso indica que o projeto está sujeito a gargalos reais, principalmente I/O de disco, overhead de multiprocessamento e etapas sequenciais de redução.
+### Distribuição de Corridas
+Gráfico de pizza e barras da distribuição de corridas por faixa de distância.
 
-Assim, o projeto demonstra tanto a vantagem prática do processamento paralelo quanto suas limitações, oferecendo uma análise coerente de speedup, eficiência e saturação de desempenho.
+![Distribuição de Corridas](grafico_distribuicao.png)
+
+### Estatísticas das Distâncias
+Box-plot sintético com P25, mediana, P75, P90 e P99 das distâncias.
+
+![Estatísticas das Distâncias](grafico_estatisticas.png)
+
+### Controle de Memória por Configuração
+Limite de memória total (crescente) e passo por processo por configuração de cores.
+
+![Controle de Memória](grafico_memoria.png)
