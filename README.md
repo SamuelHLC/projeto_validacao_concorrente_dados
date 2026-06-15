@@ -29,7 +29,7 @@ O problema se enquadra na categoria de **paralelismo de dados**: o mesmo conjunt
 
 ### Por que esse problema é relevante?
 
-O arquivo `yellow_tripdata_2015-01.csv` contém **12.748.986 registros** e ocupa aproximadamente **2 GB** em disco. Processar esse volume sequencialmente é viável, mas lento — no hardware utilizado, a versão sequencial levou **142 segundos**. A versão paralela divide o trabalho entre múltiplos processos do sistema operacional, buscando reduzir esse tempo.
+O arquivo `yellow_tripdata_2015-01.csv` contém **12.748.986 registros** e ocupa aproximadamente **2 GB** em disco. Processar esse volume sequencialmente é viável, mas lento — no hardware utilizado, a versão sequencial levou **80 segundos**. A versão paralela divide o trabalho entre múltiplos processos do sistema operacional, buscando reduzir esse tempo.
 
 Na prática, os resultados revelam um comportamento fundamental da computação paralela: o ganho **não é linear** com o número de processos, e o speedup é limitado pela fração sequencial inevitável do programa. Esse fenômeno é previsto teoricamente pela **Lei de Amdahl** e este projeto o documenta de forma empírica e transparente.
 
@@ -148,7 +148,7 @@ O processo principal recebe os dicionários compactos de todos os workers e os c
 
 ### Controle de memória por core
 
-O projeto implementa um limite de memória que cresce linearmente com o número de cores, conforme descrito abaixo. O tamanho do passo (chunk de bytes) nunca pode exceder a cota individual de 500 MB por core:
+O projeto implementa um limite de memória que cresce linearmente com o número de cores. O tamanho do passo (chunk de bytes) nunca pode exceder a cota individual de 500 MB por core:
 
 ```python
 MEM_BASE_POR_CORE = 500 * 1024 * 1024   # 500 MB por core
@@ -166,9 +166,9 @@ def calcular_passo(tamanho_arquivo, num_processos):
 | 8  | 4 GB    | ≤ 500 MB |
 | 12 | 6 GB    | ≤ 500 MB |
 
-![Controle de Memória](grafico_memoria.png)
-
 Os valores totais são sempre **crescentes** com mais cores. Cada processo individualmente nunca ultrapassa a cota de 500 MB, evitando que um único worker tente carregar mais dados do que a memória disponível para ele.
+
+![Controle de Memória por Configuração](grafico_memoria.png)
 
 ### Por que `multiprocessing` e não `threading`?
 
@@ -220,7 +220,7 @@ projeto/
     ├── grafico_barras_tempo.png
     ├── grafico_distribuicao.png
     ├── grafico_estatisticas.png
-    ├── grafico_memoria.png         ← limite de memória por configuração
+    ├── grafico_memoria.png
     └── benchmark_dados.json
 ```
 
@@ -324,31 +324,31 @@ Os experimentos foram executados em uma máquina com **12 núcleos lógicos**.
   NYC Yellow Taxi  —  Processamento SEQUENCIAL
 ============================================================
 
-  Total de corridas válidas     :     12,748,986
+  Total de corridas válidas     :      12,669,621
 
   DISTÂNCIAS (milhas)
-  Soma total                    :  30,245,817.6543
-  Média                         :           2.3724
-  Maior corrida                 :         810.0000
-  Menor corrida                 :           0.0100
-  Desvio padrão                 :           2.8901
+  Soma total                    : 171,590,254.9900
+  Média                         :         13.5434
+  Maior corrida                 :   15420004.5000
+  Menor corrida                 :          0.0100
+  Desvio padrão                 :       9874.8783
 
   PERCENTIS
-  P25 (1º quartil)              :           1.0000
-  P50 (mediana)                 :           1.7000
-  P75 (3º quartil)              :           3.1000
-  P90                           :           5.3000
-  P99                           :          13.4000
+  P25 (1º quartil)              :          1.0000
+  P50 (mediana)                 :          1.7000
+  P75 (3º quartil)              :          3.0100
+  P90                           :          6.0000
+  P99                           :         18.2400
 
   DISTRIBUIÇÃO POR FAIXA
-  Curta      (0 – 1 mi):  3,842,102  (30.1%)
-  Média      (1 – 3 mi):  5,629,488  (44.2%)
-  Longa      (3 – 7 mi):  2,437,901  (19.1%)
-  Muito longa(7 – 15 mi):   694,312  ( 5.4%)
-  Extrema    (> 15 mi):    145,183  ( 1.1%)
+  Curta      (0 – 1 mi):  3,316,638  ( 26.2%)
+  Média      (1 – 3 mi):  6,180,140  ( 48.8%)
+  Longa      (3 – 7 mi):  2,141,331  ( 16.9%)
+  Muito longa(7 – 15 mi):    740,577  (  5.8%)
+  Extrema    (> 15 mi):    290,935  (  2.3%)
 
   DESEMPENHO
-  Tempo de execução             :        142.3817 s
+  Tempo de execução             :         80.5287 s
 ============================================================
 ```
 
@@ -360,13 +360,15 @@ Resultados medidos com `--chunks-por-processo 4 --carga-cpu 20`. Cada configura�
 
 | Processos | Tempo (s) | Speedup | Eficiência | Chunks |
 |---|---|---|---|---|
-| 1  | 68,4280 | 1,000× | 100,0% | 4  |
-| 2  | 37,3655 | 1,831× |  91,6% | 8  |
-| 4  | 20,2215 | 3,384× |  84,6% | 16 |
-| 8  | 14,3583 | 4,766× |  59,6% | 32 |
-| 12 | 13,3521 | 5,125× |  42,7% | 48 |
+| 1  | 50,7897 | 1,000× | 100,0% | 4  |
+| 2  | 26,7067 | 1,902× |  95,1% | 8  |
+| 4  | 15,9524 | 3,184× |  79,6% | 16 |
+| 8  | 11,6650 | 4,354× |  54,4% | 32 |
+| 12 |  9,9580 | 5,100× |  42,5% | 48 |
 
-![Tempo de Execução](grafico_tempo.png)
+![Tempo de Execução × Número de Processos](grafico_tempo.png)
+
+![Comparativo de Tempo por Configuração](grafico_barras_tempo.png)
 
 ---
 
@@ -376,15 +378,15 @@ Resultados medidos com `--chunks-por-processo 4 --carga-cpu 20`. Cada configura�
 
 | Versão | Processos | Tempo total | Speedup |
 |---|---|---|---|
-| Sequencial | 1  | 142,38s | 1,000× (referência) |
-| Paralela   | 2  | 37,37s  | **1,831×** |
-| Paralela   | 4  | 20,22s  | **3,384×** |
-| Paralela   | 8  | 14,36s  | **4,766×** |
-| Paralela   | 12 | 13,35s  | **5,125×** |
-
-![Speedup](grafico_speedup.png)
+| Sequencial | 1  | 80,53s  | 1,000× (referência) |
+| Paralela   | 2  | 26,71s  | **1,902×** |
+| Paralela   | 4  | 15,95s  | **3,184×** |
+| Paralela   | 8  | 11,67s  | **4,354×** |
+| Paralela   | 12 |  9,96s  | **5,100×** |
 
 O speedup é **sempre crescente**: cada configuração com mais processos é melhor do que a anterior, confirmando que o I/O paralelo está funcionando corretamente.
+
+![Speedup Real vs. Ideal](grafico_speedup.png)
 
 ### Por que o speedup não cresce linearmente?
 
@@ -400,7 +402,7 @@ Speedup_máximo = 1 / (S + (1 - S) / P)
 Onde `P` é o número de processos. Quanto maior `S`, menor o benefício de adicionar mais processos.
 
 **2. Overhead de gerenciamento de processos**
-Criar, coordenar e encerrar processos tem custo próprio. Com 12 processos, esse overhead se torna perceptível e reduz a eficiência por processo de 84,6% (4 cores) para 42,7% (12 cores).
+Criar, coordenar e encerrar processos tem custo próprio. Com 12 processos, esse overhead se torna perceptível e reduz a eficiência por processo de 79,6% (4 cores) para 42,5% (12 cores).
 
 ![Eficiência Paralela](grafico_eficiencia.png)
 
@@ -409,10 +411,10 @@ Criar, coordenar e encerrar processos tem custo próprio. Com 12 processos, esse
 A queda de eficiência com mais cores não é um problema — é o comportamento normal previsto pela Lei de Amdahl. O indicador de que a implementação está correta é o speedup **sempre crescente**:
 
 ```
-1 core  → 1,000×   (referência)
-2 cores → 1,831×   ✓ cresceu
-4 cores → 3,384×   ✓ cresceu
-8 cores → 4,766×   ✓ cresceu
+1 core   → 1,000×  (referência)
+2 cores  → 1,831×  ✓ cresceu
+4 cores  → 3,384×  ✓ cresceu
+8 cores  → 4,766×  ✓ cresceu
 12 cores → 5,125×  ✓ cresceu
 ```
 
@@ -458,14 +460,14 @@ Barras comparativas de tempo para visualização direta.
 ### Distribuição de Corridas
 Gráfico de pizza e barras da distribuição de corridas por faixa de distância.
 
-![Distribuição](grafico_distribuicao.png)
+![Distribuição de Corridas](grafico_distribuicao.png)
 
 ### Estatísticas das Distâncias
 Box-plot sintético com P25, mediana, P75, P90 e P99 das distâncias.
 
-![Estatísticas](grafico_estatisticas.png)
+![Estatísticas das Distâncias](grafico_estatisticas.png)
 
 ### Controle de Memória por Configuração
 Limite de memória total (crescente) e passo por processo por configuração de cores.
 
-![Memória](grafico_memoria.png)
+![Controle de Memória](grafico_memoria.png)
