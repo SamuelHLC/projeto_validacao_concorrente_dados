@@ -166,6 +166,8 @@ def calcular_passo(tamanho_arquivo, num_processos):
 | 8  | 4 GB    | ≤ 500 MB |
 | 12 | 6 GB    | ≤ 500 MB |
 
+![Controle de Memória](grafico_memoria.png)
+
 Os valores totais são sempre **crescentes** com mais cores. Cada processo individualmente nunca ultrapassa a cota de 500 MB, evitando que um único worker tente carregar mais dados do que a memória disponível para ele.
 
 ### Por que `multiprocessing` e não `threading`?
@@ -364,6 +366,8 @@ Resultados medidos com `--chunks-por-processo 4 --carga-cpu 20`. Cada configura�
 | 8  | 14,3583 | 4,766× |  59,6% | 32 |
 | 12 | 13,3521 | 5,125× |  42,7% | 48 |
 
+![Tempo de Execução](grafico_tempo.png)
+
 ---
 
 ## 9. Análise de Desempenho
@@ -377,6 +381,8 @@ Resultados medidos com `--chunks-por-processo 4 --carga-cpu 20`. Cada configura�
 | Paralela   | 4  | 20,22s  | **3,384×** |
 | Paralela   | 8  | 14,36s  | **4,766×** |
 | Paralela   | 12 | 13,35s  | **5,125×** |
+
+![Speedup](grafico_speedup.png)
 
 O speedup é **sempre crescente**: cada configuração com mais processos é melhor do que a anterior, confirmando que o I/O paralelo está funcionando corretamente.
 
@@ -395,6 +401,8 @@ Onde `P` é o número de processos. Quanto maior `S`, menor o benefício de adic
 
 **2. Overhead de gerenciamento de processos**
 Criar, coordenar e encerrar processos tem custo próprio. Com 12 processos, esse overhead se torna perceptível e reduz a eficiência por processo de 84,6% (4 cores) para 42,7% (12 cores).
+
+![Eficiência Paralela](grafico_eficiencia.png)
 
 ### A queda de eficiência é esperada
 
@@ -427,12 +435,37 @@ Versões anteriores do projeto apresentavam queda de speedup ao passar de 4 para
 
 O script `taxi_benchmark.py` gera automaticamente os seguintes gráficos na pasta `graficos_benchmark/`:
 
-| Arquivo | O que mostra |
-|---|---|
-| `grafico_tempo.png` | Curva de tempo de execução por número de processos |
-| `grafico_speedup.png` | Speedup real medido vs. speedup ideal teórico (linha diagonal) |
-| `grafico_eficiencia.png` | Eficiência percentual por número de processos — queda revela overhead e fração sequencial |
-| `grafico_barras_tempo.png` | Barras comparativas de tempo para visualização direta |
-| `grafico_distribuicao.png` | Gráfico de pizza e barras da distribuição de corridas por faixa de distância |
-| `grafico_estatisticas.png` | Box-plot sintético com P25, mediana, P75, P90 e P99 das distâncias |
-| `grafico_memoria.png` | Limite de memória total (crescente) e passo por processo por configuração de cores |
+### Tempo de Execução
+Curva de tempo de execução por número de processos.
+
+![Tempo de Execução](grafico_tempo.png)
+
+### Speedup
+Speedup real medido vs. speedup ideal teórico (linha diagonal).
+
+![Speedup](grafico_speedup.png)
+
+### Eficiência Paralela
+Eficiência percentual por número de processos — queda revela overhead e fração sequencial.
+
+![Eficiência Paralela](grafico_eficiencia.png)
+
+### Comparativo de Tempo
+Barras comparativas de tempo para visualização direta.
+
+![Comparativo de Tempo](grafico_barras_tempo.png)
+
+### Distribuição de Corridas
+Gráfico de pizza e barras da distribuição de corridas por faixa de distância.
+
+![Distribuição](grafico_distribuicao.png)
+
+### Estatísticas das Distâncias
+Box-plot sintético com P25, mediana, P75, P90 e P99 das distâncias.
+
+![Estatísticas](grafico_estatisticas.png)
+
+### Controle de Memória por Configuração
+Limite de memória total (crescente) e passo por processo por configuração de cores.
+
+![Memória](grafico_memoria.png)
