@@ -1,0 +1,78 @@
+{
+  "processos": [
+    1,
+    2,
+    4,
+    8,
+    12
+  ],
+  "tempos": [
+    68.428003,
+    37.365454,
+    20.221481,
+    14.358285,
+    13.352119
+  ],
+  "speedups": [
+    1.0,
+    1.8313,
+    3.3839,
+    4.7658,
+    5.1249
+  ],
+  "eficiencias": [
+    100.0,
+    91.57,
+    84.6,
+    59.57,
+    42.71
+  ],
+  "repeticoes": 3,
+  "chunks_por_processo": 4,
+  "carga_cpu": 20,
+  "hist_bin_width": 0.01,
+  "hist_max": 100.0,
+  "tamanho_arquivo_mb": 1894.0,
+  "limites_memoria_mb": [
+    500,
+    1000,
+    2000,
+    4000,
+    6000
+  ],
+  "passos_mb": [
+    500.0,
+    500.0,
+    473.5,
+    236.7,
+    157.8
+  ],
+  "chunks_por_configuracao": {
+    "1": 4,
+    "2": 8,
+    "4": 16,
+    "8": 32,
+    "12": 48
+  },
+  "metricas_corridas": {
+    "soma_total": 171590178.02,
+    "media": 13.5435,
+    "maior_corrida": 15420004.5,
+    "menor_corrida": 0.01,
+    "total_corridas": 12669605,
+    "desvio_padrao": 9874.8845,
+    "mediana": 1.7,
+    "percentil_25": 1.0,
+    "percentil_75": 3.01,
+    "percentil_90": 6.0,
+    "percentil_99": 18.23,
+    "distribuicao": {
+      "0–1 mi": 3316637,
+      "1–3 mi": 6180131,
+      "3–7 mi": 2141329,
+      "7–15 mi": 740575,
+      ">15 mi": 290933
+    }
+  },
+  "observacao": "Tempos = mediana das repetições. Workers usam f.seek() — leem apenas seu bloco de bytes. Percentis estimados por histograma (bin=0.01mi). Passo limitado a 500 MB/core."
+}
